@@ -18,10 +18,12 @@ class UserSignupSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
+        # Create user but set is_active to False until email is verified
         user = User.objects.create_user(
             username=validated_data['username'],
             email=validated_data['email'],
-            password=validated_data['password']
+            password=validated_data['password'],
+            is_active=False
         )
         UserProfile.objects.create(user=user)
         return user
@@ -56,7 +58,29 @@ class PasswordChangeSerializer(serializers.Serializer):
 
     def validate(self, data):
         if data['new_password'] != data['confirm_password']:
-            raise serializers.ValidationError("New passwords must match.")
+            raise serializers.ValidationError({"confirm_password": "New passwords must match."})
+
+        user = self.context['request'].user
+        
+        if not user.check_password(data['old_password']):
+            raise serializers.ValidationError({"old_password": "Incorrect old password."})
+        
+        return data
+
+class PasswordChangeSerializer(serializers.Serializer):
+    old_password = serializers.CharField(required=True)
+    new_password = serializers.CharField(required=True)
+    confirm_password = serializers.CharField(required=True)
+
+    def validate(self, data):
+        if data['new_password'] != data['confirm_password']:
+            raise serializers.ValidationError({"confirm_password": "New passwords must match."})
+
+        user = self.context['request'].user
+        
+        if not user.check_password(data['old_password']):
+            raise serializers.ValidationError({"old_password": "Incorrect old password."})
+        
         return data
 
 class PasswordResetSerializer(serializers.Serializer):
@@ -65,5 +89,12 @@ class PasswordResetSerializer(serializers.Serializer):
 
     def validate(self, data):
         if not data.get('username') and not data.get('email'):
-            raise serializers.ValidationError("Either username or email is required.")
+            raise serializers.ValidationError("Either username or email is required")
         return data
+
+class OTPVerificationSerializer(serializers.Serializer):
+    """
+    Serializer for verifying a one-time password.
+    """
+    email = serializers.EmailField(required=True)
+    otp_code = serializers.CharField(required=True, max_length=6)

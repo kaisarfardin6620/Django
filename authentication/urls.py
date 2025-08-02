@@ -1,10 +1,21 @@
 from django.urls import path
-from .views import UserSignupAPIView, UserLoginAPIView, UserLogoutAPIView, UserProfileAPIView, UpdateProfileAPIView, ChangePasswordAPIView, PasswordResetRequestAPIView, PasswordResetConfirmAPIView
+from .views import (UserSignupAPIView,
+                    UserLoginAPIView,
+                    UserLogoutAPIView,
+                    UserProfileAPIView,
+                    UpdateProfileAPIView,
+                    ChangePasswordAPIView,
+                    PasswordResetRequestAPIView,
+                    PasswordResetConfirmAPIView,
+                    VerifySignupOTPView,
+                    Verify2FAOTPView)
 
 
 urlpatterns = [
     path('signup/', UserSignupAPIView.as_view(), name='signup'),
+    path('signup/verify-otp/', VerifySignupOTPView.as_view(), name='verify-signup-otp'), # New
     path('login/', UserLoginAPIView.as_view(), name='login'),
+    path('login/verify-2fa/', Verify2FAOTPView.as_view(), name='verify-2fa-otp'),         # New
     path('logout/', UserLogoutAPIView.as_view(), name='logout'),
     path('profile/', UserProfileAPIView.as_view(), name='user-profile'),
     path('profile/update/', UpdateProfileAPIView.as_view(), name='update-profile'),
@@ -12,3 +23,5 @@ urlpatterns = [
     path('password/reset/', PasswordResetRequestAPIView.as_view(), name='password-reset-request'),
     path('password/reset/confirm/', PasswordResetConfirmAPIView.as_view(), name='password-reset-confirm'),
 ]
+
+
