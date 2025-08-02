@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     'authentication',
     'rest_framework',
 
+
 ]
 
 MIDDLEWARE = [
@@ -135,16 +136,15 @@ REST_FRAMEWORK = {
     ],
 }
 
-DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
 import os
 from dotenv import load_dotenv
 
-
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 587
+EMAIL_HOST = 'sandbox.smtp.mailtrap.io'
+EMAIL_PORT = 2525
 EMAIL_USE_TLS = True
-EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER')
-EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD')
+EMAIL_HOST_USER = '1ac8a53d81464f'
+EMAIL_HOST_PASSWORD = '13fecb3d8e1085s'

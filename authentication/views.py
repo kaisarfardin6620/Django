@@ -28,7 +28,7 @@ def send_otp_email(user, purpose):
     
     subject = f'Your {purpose} verification code'
     message = f'Your one-time password for {purpose} is: {otp_code}. It is valid for 5 minutes.'
-    send_mail(subject, message, 'your_email@gmail.com', [user.email], fail_silently=False)
+    send_mail(subject, message, '18192103277@cse.bubt.edu.bd', [user.email], fail_silently=False)
 
 class UserSignupAPIView(APIView):
     def post(self, request, *args, **kwargs):
