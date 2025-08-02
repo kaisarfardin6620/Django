@@ -21,6 +21,7 @@ from .serializers import (
 
 User = get_user_model()
 
+# Helper function to send an OTP email
 def send_otp_email(user, purpose):
     otp_code = str(random.randint(100000, 999999))
     OTP.objects.filter(user=user, purpose=purpose, is_used=False).update(is_used=True)
@@ -28,7 +29,7 @@ def send_otp_email(user, purpose):
     
     subject = f'Your {purpose} verification code'
     message = f'Your one-time password for {purpose} is: {otp_code}. It is valid for 5 minutes.'
-    send_mail(subject, message, '18192103277@cse.bubt.edu.bd', [user.email], fail_silently=False)
+    send_mail(subject, message, 'your_email@gmail.com', [user.email], fail_silently=False)
 
 class UserSignupAPIView(APIView):
     def post(self, request, *args, **kwargs):
@@ -61,7 +62,7 @@ class VerifySignupOTPView(APIView):
 
             except User.DoesNotExist:
                 return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)    
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST) 
     
 
 class ResendSignupOTPView(APIView):
@@ -90,11 +91,21 @@ class UserLoginAPIView(APIView):
             
             user = authenticate(request, username=username, password=password)
             
-            if user and user.is_active:
-                send_otp_email(user, '2fa')
-                return Response({'message': 'Authentication successful. Please check your email for the 2FA code to complete your login.'}, status=status.HTTP_200_OK)
+            if user:
+                if user.is_active:
+                    # Check if 2FA is enabled for the user
+                    if user.userprofile.is_2fa_enabled:
+                        # Send 2FA OTP and return a success message
+                        send_otp_email(user, '2fa')
+                        return Response({'message': '2FA enabled. Please check your email for the verification code.'}, status=status.HTTP_200_OK)
+                    else:
+                        # 2FA is not enabled, so log the user in directly
+                        login(request, user)
+                        return Response({'message': 'User logged in successfully'}, status=status.HTTP_200_OK)
+                else:
+                    return Response({'error': 'Account not activated. Please verify your email.'}, status=status.HTTP_401_UNAUTHORIZED)
             else:
-                return Response({'error': 'Invalid credentials or inactive account'}, status=status.HTTP_401_UNAUTHORIZED)
+                return Response({'error': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
 class Verify2FAOTPView(APIView):
@@ -203,3 +214,21 @@ class PasswordResetConfirmAPIView(APIView):
             return Response({'message': 'Password reset successfully'}, status=status.HTTP_200_OK)
         except User.DoesNotExist:
             return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+class Toggle2FAAPIView(APIView):
+    """
+    Allows an authenticated user to toggle their 2FA status.
+    """
+    def post(self, request, *args, **kwargs):
+        user = request.user
+        if not user.is_authenticated:
+            return Response({'error': 'Authentication credentials were not provided.'}, status=status.HTTP_401_UNAUTHORIZED)
+        
+        # Toggle the 2FA status
+        user_profile = user.userprofile
+        user_profile.is_2fa_enabled = not user_profile.is_2fa_enabled
+        user_profile.save()
+
+        status_message = "enabled" if user_profile.is_2fa_enabled else "disabled"
+        return Response({'message': f'Two-Factor Authentication has been {status_message}.'}, status=status.HTTP_200_OK)
