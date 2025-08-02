@@ -1,0 +1,31 @@
+# Django project ignore file
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+eggs/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environment
+.venv/
+env/
+venv/
+ENV/
+
+# Database files
+*.sqlite3
+
+# Local settings and environment variables
+.env
