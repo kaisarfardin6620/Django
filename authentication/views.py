@@ -62,6 +62,24 @@ class VerifySignupOTPView(APIView):
             except User.DoesNotExist:
                 return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)    
+    
+
+class ResendSignupOTPView(APIView):
+    """
+    Resends an OTP for signup verification.
+    """
+    def post(self, request):
+        email = request.data.get('email')
+        if not email:
+            return Response({'error': 'Email is required'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            user = User.objects.get(email=email)
+            if user.is_active:
+                return Response({'message': 'Account is already active. Please log in.'}, status=status.HTTP_400_BAD_REQUEST)
+            send_otp_email(user, 'signup')
+            return Response({'message': 'New OTP sent to your email.'}, status=status.HTTP_200_OK)
+        except User.DoesNotExist:
+            return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)    
 
 class UserLoginAPIView(APIView):
     def post(self, request, *args, **kwargs):
@@ -101,6 +119,23 @@ class Verify2FAOTPView(APIView):
             except User.DoesNotExist:
                 return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)    
+    
+
+class Resend2FAOTPView(APIView):
+    """
+    Resends an OTP for 2FA login.
+    """
+    def post(self, request):
+        email = request.data.get('email')
+        if not email:
+            return Response({'error': 'Email is required'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            user = User.objects.get(email=email)
+            send_otp_email(user, '2fa')
+            return Response({'message': 'New OTP sent to your email.'}, status=status.HTTP_200_OK)
+        except User.DoesNotExist:
+            return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
 
 class UserLogoutAPIView(APIView):
     def get(self, request, *args, **kwargs):

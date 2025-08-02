@@ -8,14 +8,18 @@ from .views import (UserSignupAPIView,
                     PasswordResetRequestAPIView,
                     PasswordResetConfirmAPIView,
                     VerifySignupOTPView,
-                    Verify2FAOTPView)
+                    Verify2FAOTPView,
+                    ResendSignupOTPView,
+                    Resend2FAOTPView)
 
 
 urlpatterns = [
     path('signup/', UserSignupAPIView.as_view(), name='signup'),
-    path('signup/verify-otp/', VerifySignupOTPView.as_view(), name='verify-signup-otp'), # New
+    path('signup/verify-otp/', VerifySignupOTPView.as_view(), name='verify-signup-otp'),
+    path('signup/resend-otp/', ResendSignupOTPView.as_view(), name='resend-signup-otp'), # New
     path('login/', UserLoginAPIView.as_view(), name='login'),
-    path('login/verify-2fa/', Verify2FAOTPView.as_view(), name='verify-2fa-otp'),         # New
+    path('login/verify-2fa/', Verify2FAOTPView.as_view(), name='verify-2fa-otp'),
+    path('login/resend-2fa/', Resend2FAOTPView.as_view(), name='resend-2fa-otp'),         # New
     path('logout/', UserLogoutAPIView.as_view(), name='logout'),
     path('profile/', UserProfileAPIView.as_view(), name='user-profile'),
     path('profile/update/', UpdateProfileAPIView.as_view(), name='update-profile'),
