@@ -3,7 +3,8 @@ from rest_framework import serializers
 from django.contrib.auth.models import User
 from .models import UserProfile, OTP, EmailVerificationToken, EmailChangeToken, UserActivityLog # Ensure all models are imported
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
-from django.utils.encoding import force_str
+from django.utils.encoding import force_str, DjangoUnicodeDecodeError # Import DjangoUnicodeDecodeError
+from django.utils.http import urlsafe_base64_decode # Import urlsafe_base64_decode
 from django.utils import timezone # Import timezone for custom validation
 
 # Custom password validation function
@@ -98,13 +99,15 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
             raise serializers.ValidationError({"confirm_password": "New passwords must match."})
         
         try:
-            uid = force_str(data.get('uid'))
-            user = User.objects.get(pk=uid)
+            # Decode the uid back to the user's primary key
+            uid_decoded = force_str(urlsafe_base64_decode(data.get('uid')))
+            user = User.objects.get(pk=uid_decoded)
+            
             token_generator = PasswordResetTokenGenerator()
             if not token_generator.check_token(user, data.get('token')):
                 raise serializers.ValidationError("Invalid or expired password reset token.")
             self.user = user # Store user for use in save method
-        except (User.DoesNotExist, TypeError, ValueError, OverflowError):
+        except (User.DoesNotExist, TypeError, ValueError, OverflowError, DjangoUnicodeDecodeError): # Added DjangoUnicodeDecodeError
             raise serializers.ValidationError("Invalid or expired password reset token.")
         
         return data
@@ -126,9 +129,10 @@ class AccountDeactivateSerializer(serializers.Serializer):
 class AccountDeleteSerializer(serializers.Serializer):
     password = serializers.CharField(required=True)
 
-class AccountReactivateSerializer(serializers.Serializer):
-    username = serializers.CharField(required=True)
-    password = serializers.CharField(required=True)
+# AccountReactivateSerializer is removed as login now handles reactivation
+# class AccountReactivateSerializer(serializers.Serializer):
+#     username = serializers.CharField(required=True)
+#     password = serializers.CharField(required=True)
 
 class EmailVerificationSerializer(serializers.Serializer):
     token = serializers.UUIDField(required=True)

@@ -25,7 +25,7 @@ from .serializers import (
     OTPVerificationSerializer,
     AccountDeactivateSerializer,
     AccountDeleteSerializer,
-    AccountReactivateSerializer,
+    # AccountReactivateSerializer, # Removed: No longer needed
     EmailVerificationSerializer,
     ProfilePictureUploadSerializer, # New serializer import
     EmailChangeRequestSerializer, # New serializer import
@@ -216,29 +216,36 @@ class UserLoginAPIView(APIView):
                 log_user_activity(user, 'Login Failed', request=request, details=f'Account locked for {remaining_time} minutes.')
                 return Response({'error': f'Account locked. Please try again in {remaining_time} minutes.'}, status=status.HTTP_403_FORBIDDEN)
 
-            authenticated_user = authenticate(request, username=username, password=password)
-            
-            if authenticated_user:
-                if authenticated_user.is_active:
-                    # Reset failed login attempts on successful login
-                    user.userprofile.failed_login_attempts = 0
-                    user.userprofile.lockout_until = None
-                    user.userprofile.save()
+            # Manually check password for potentially inactive user
+            if user.check_password(password):
+                # If the user was inactive, reactivate them here
+                if not user.is_active:
+                    user.is_active = True
+                    user.save()
+                    log_user_activity(user, 'Account Reactivated via Login', request=request)
+                
+                # Reset failed login attempts on successful login (or reactivation)
+                user.userprofile.failed_login_attempts = 0
+                user.userprofile.lockout_until = None
+                user.userprofile.save()
 
-                    if authenticated_user.userprofile.is_2fa_enabled:
-                        request.session['pre_2fa_user_id'] = authenticated_user.id
-                        send_otp_email(authenticated_user, '2fa')
-                        log_user_activity(authenticated_user, 'Login Attempt - 2FA Required', request=request)
-                        return Response({'message': '2FA enabled. Please check your email for the verification code.'}, status=status.HTTP_200_OK)
-                    else:
-                        login(request, authenticated_user)
-                        log_user_activity(authenticated_user, 'Login Success', request=request)
-                        return Response({'message': 'User logged in successfully'}, status=status.HTTP_200_OK)
-                else:
-                    log_user_activity(authenticated_user, 'Login Failed', request=request, details='Account not activated.')
-                    return Response({'error': 'Account not activated. Please verify your email.'}, status=status.HTTP_401_UNAUTHORIZED)
+                # Now authenticate and log in the user
+                authenticated_user = authenticate(request, username=username, password=password) # This should now work as user is active
+
+                if authenticated_user and authenticated_user.userprofile.is_2fa_enabled:
+                    request.session['pre_2fa_user_id'] = authenticated_user.id
+                    send_otp_email(authenticated_user, '2fa')
+                    log_user_activity(authenticated_user, 'Login Attempt - 2FA Required', request=request)
+                    return Response({'message': '2FA enabled. Please check your email for the verification code.'}, status=status.HTTP_200_OK)
+                elif authenticated_user: # User is active and 2FA is not enabled
+                    login(request, authenticated_user)
+                    log_user_activity(authenticated_user, 'Login Success', request=request)
+                    return Response({'message': 'User logged in successfully'}, status=status.HTTP_200_OK)
+                else: # Should ideally not happen if password check passed and user.is_active is True
+                    log_user_activity(user, 'Login Failed', request=request, details='Authentication failed after password check (unexpected).')
+                    return Response({'error': 'Invalid credentials (authentication failed)'}, status=status.HTTP_401_UNAUTHORIZED)
             else:
-                # Increment failed login attempts
+                # Increment failed login attempts for incorrect password
                 user.userprofile.failed_login_attempts += 1
                 if user.userprofile.failed_login_attempts >= 5: # Lockout after 5 failed attempts
                     user.userprofile.lockout_until = timezone.now() + timezone.timedelta(minutes=15) # Lock for 15 minutes
@@ -409,13 +416,58 @@ class PasswordResetConfirmAPIView(APIView):
     def post(self, request, *args, **kwargs):
         serializer = PasswordResetConfirmSerializer(data=request.data)
         if serializer.is_valid():
-            user = serializer.user 
-            user.set_password(serializer.validated_data['new_password'])
-            user.save()
-            log_user_activity(user, 'Password Reset Confirmed', request=request)
-            return Response({'message': 'Password has been reset successfully.'}, status=status.HTTP_200_OK)
-        log_user_activity(None, 'Password Reset Confirmation Failed', request=request, details=f'Errors: {serializer.errors}')
+            # --- DEBUGGING PRINTS START ---
+            print(f"\n--- Password Reset Confirm Debugging ---")
+            print(f"1. Request Data Received:")
+            print(f"   UID: {request.data.get('uid')}")
+            print(f"   Token: {request.data.get('token')}")
+            print(f"   New Password (first 5 chars): {request.data.get('new_password')[:5]}...")
+
+            try:
+                # The serializer's validate method should have already set self.user
+                user = serializer.user 
+                print(f"2. User Object Retrieved:")
+                print(f"   Username: {user.username}")
+                print(f"   User ID: {user.id}")
+                print(f"   is_active: {user.is_active}")
+                print(f"   Last Login: {user.last_login}")
+                print(f"   Date Joined: {user.date_joined}")
+                print(f"   Password Hash (first 10 chars): {user.password[:10]}...") # Only first few chars for security
+
+                # Re-check the token validity directly here for detailed output
+                token_generator = PasswordResetTokenGenerator()
+                is_token_valid = token_generator.check_token(user, serializer.validated_data['token'])
+                print(f"3. Result of token_generator.check_token(): {is_token_valid}")
+
+                if not is_token_valid:
+                    # This block should ideally be caught by the serializer's validation,
+                    # but it's here for extra debugging confirmation.
+                    print(f"4. Token is explicitly invalid after check. Returning 400.")
+                    log_user_activity(user, 'Password Reset Confirmation Failed', request=request, details='Token check failed in view.')
+                    return Response({'error': 'Invalid or expired password reset token.'}, status=status.HTTP_400_BAD_REQUEST)
+
+                user.set_password(serializer.validated_data['new_password'])
+                user.save()
+                print(f"4. Password successfully reset and user saved.")
+                log_user_activity(user, 'Password Reset Confirmed', request=request)
+                return Response({'message': 'Password has been reset successfully.'}, status=status.HTTP_200_OK)
+            except Exception as e:
+                print(f"5. An unexpected exception occurred: {e}")
+                log_user_activity(None, 'Password Reset Confirmation Failed', request=request, details=f'Unhandled exception: {e}')
+                return Response({'error': 'An unexpected error occurred during password reset.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            finally:
+                print(f"--- End Password Reset Confirm Debugging ---\n")
+            # --- DEBUGGING PRINTS END ---
+        
+        # If serializer is not valid
+        print(f"\n--- Password Reset Confirm Debugging ---")
+        print(f"1. Serializer validation failed.")
+        print(f"   Errors: {serializer.errors}")
+        print(f"--- End Password Reset Confirm Debugging ---\n")
+        log_user_activity(None, 'Password Reset Confirmation Failed', request=request, details=f'Serializer errors: {serializer.errors}')
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
 
 
 class Toggle2FAAPIView(APIView):
@@ -471,32 +523,10 @@ class DeleteAccountAPIView(APIView):
             return Response({'message': 'Account deleted successfully. You have been logged out.'}, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-class ReactivateAccountAPIView(APIView):
-    def post(self, request, *args, **kwargs):
-        serializer = AccountReactivateSerializer(data=request.data)
-        if serializer.is_valid():
-            username = serializer.validated_data.get('username')
-            password = serializer.validated_data.get('password')
-
-            try:
-                user = User.objects.get(username=username)
-            except User.DoesNotExist:
-                log_user_activity(None, 'Account Reactivation Failed', request=request, details=f'User not found: {username}')
-                return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
-            
-            if user.is_active:
-                return Response({'message': 'Account is already active.'}, status=status.HTTP_400_BAD_REQUEST)
-
-            if user.check_password(password):
-                user.is_active = True
-                user.save()
-                login(request, user)
-                log_user_activity(user, 'Account Reactivated', request=request)
-                return Response({'message': 'Account reactivated successfully. You have been logged in.'}, status=status.HTTP_200_OK)
-            else:
-                log_user_activity(user, 'Account Reactivation Failed', request=request, details='Invalid credentials.')
-                return Response({'error': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+# ReactivateAccountAPIView is removed as login handles reactivation
+# class ReactivateAccountAPIView(APIView):
+#     def post(self, request, *args, **kwargs):
+#         ... (This class is now removed)
 
 # New View to retrieve user activity logs
 class UserActivityLogAPIView(APIView):

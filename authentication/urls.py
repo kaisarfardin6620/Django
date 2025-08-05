@@ -13,7 +13,7 @@ from .views import (
     Toggle2FAAPIView,
     DeactivateAccountAPIView,
     DeleteAccountAPIView,
-    ReactivateAccountAPIView,
+    # ReactivateAccountAPIView, # Removed: No longer needed
     VerifyEmailLinkAPIView, # For email link signup verification
     ResendVerificationLinkAPIView, # For resending email link signup verification
     ProfilePictureUploadAPIView, # New
@@ -29,7 +29,7 @@ urlpatterns = [
     # Option 1: Email Link Verification
     path('verify-email/', VerifyEmailLinkAPIView.as_view(), name='verify-email-link'),
     path('resend-verification-link/', ResendVerificationLinkAPIView.as_view(), name='resend-verification-link'),
-    # Option 2: OTP Verification (uncomment if you prefer this for signup, and comment out Option 1 paths)
+    # Option 2: OTP Verification (uncomment this and comment out Option 1 paths if you prefer OTP for signup)
     # path('signup/verify-otp/', VerifySignupOTPView.as_view(), name='verify-signup-otp'),
     # path('signup/resend-otp/', ResendSignupOTPView.as_view(), name='resend-signup-otp'),
 
@@ -50,7 +50,7 @@ urlpatterns = [
     path('email/change/confirm/', EmailChangeConfirmAPIView.as_view(), name='email-change-confirm'), # New URL
 
     path('account/deactivate/', DeactivateAccountAPIView.as_view(), name='deactivate-account'),
-    path('account/reactivate/', ReactivateAccountAPIView.as_view(), name='reactivate-account'),
+    # path('account/reactivate/', ReactivateAccountAPIView.as_view(), name='reactivate-account'), # Removed
     path('account/delete/', DeleteAccountAPIView.as_view(), name='delete-account'),
     path('2fa/toggle/', Toggle2FAAPIView.as_view(), name='toggle-2fa'),
 ]
