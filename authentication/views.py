@@ -69,7 +69,7 @@ def send_signup_verification_link(user):
                f'Thank you for signing up! Please click the link below to verify your email address:\n\n'
                f'{verification_url}\n\n'
                f'This link will expire in 24 hours.')
-    send_mail(subject, message, 'your_email@gmail.com', [user.email], fail_silently=False)
+    send_mail(subject, message, 'a.kaisarfardin29@gmail.com', [user.email], fail_silently=False)
 
 # Helper function to send email change verification link
 def send_email_change_verification_link(user, new_email):
