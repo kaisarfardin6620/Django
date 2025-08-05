@@ -1,4 +1,3 @@
-# authentication/views.py
 import random
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -7,13 +6,13 @@ from rest_framework.permissions import IsAuthenticated
 from django.contrib.auth import get_user_model, authenticate, login, logout
 from django.core.mail import send_mail
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
-from django.utils.http import urlsafe_base64_encode
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, force_str
 from django.utils import timezone
 import uuid
-from rest_framework.throttling import AnonRateThrottle, UserRateThrottle # Import for Rate Limiting
+from rest_framework.throttling import AnonRateThrottle, UserRateThrottle 
 
-from .models import UserProfile, OTP, EmailVerificationToken, UserActivityLog, EmailChangeToken # Import all models
+from .models import UserProfile, OTP, EmailVerificationToken, UserActivityLog, EmailChangeToken, PasswordHistory 
 from .serializers import (
     UserSignupSerializer,
     UserLoginSerializer,
@@ -25,11 +24,10 @@ from .serializers import (
     OTPVerificationSerializer,
     AccountDeactivateSerializer,
     AccountDeleteSerializer,
-    # AccountReactivateSerializer, # Removed: No longer needed
     EmailVerificationSerializer,
-    ProfilePictureUploadSerializer, # New serializer import
-    EmailChangeRequestSerializer, # New serializer import
-    EmailChangeConfirmSerializer # New serializer import
+    ProfilePictureUploadSerializer, 
+    EmailChangeRequestSerializer, 
+    EmailChangeConfirmSerializer 
 )
 
 User = get_user_model()
@@ -49,7 +47,7 @@ def log_user_activity(user, action, request=None, details=None):
 # Helper function to send OTP email
 def send_otp_email(user, purpose):
     otp_code = str(random.randint(100000, 999999))
-    OTP.objects.filter(user=user, purpose=purpose, is_used=False).update(is_used=True)
+    OTP.objects.filter(user=user, purpose=purpose, is_used=False).update(is_used=True) # Invalidate old OTPs for this purpose
     OTP.objects.create(user=user, code=otp_code, purpose=purpose)
     
     subject = f'Your {purpose} verification code'
@@ -58,7 +56,7 @@ def send_otp_email(user, purpose):
 
 # Helper function to send email verification link for signup
 def send_signup_verification_link(user):
-    EmailVerificationToken.objects.filter(user=user).delete() 
+    EmailVerificationToken.objects.filter(user=user).delete() # Invalidate any old tokens
     token_obj = EmailVerificationToken.objects.create(user=user)
     
     # IMPORTANT: Replace 'http://127.0.0.1:8001' with your actual Django server base URL for testing
@@ -86,6 +84,16 @@ def send_email_change_verification_link(user, new_email):
                f'{verification_url}\n\n'
                f'This link will expire in 24 hours.')
     send_mail(subject, message, 'a.kaisarfardin29@gmail.com', [new_email], fail_silently=False)
+
+# NEW: Helper function to send account lockout notification
+def send_account_lockout_notification(user, lockout_duration_minutes):
+    subject = 'Your Account Has Been Locked Due to Multiple Failed Login Attempts'
+    message = (f'Hi {user.username},\n\n'
+               f'Your account has been temporarily locked due to too many failed login attempts. '
+               f'For security reasons, you will be unable to log in for the next {lockout_duration_minutes} minutes.\n\n'
+               f'If you did not attempt to log in, please consider changing your password immediately '
+               f'after the lockout period ends or contact support.')
+    send_mail(subject, message, 'a.kaisarfardin29@gmail.com', [user.email], fail_silently=False)
 
 
 class UserSignupAPIView(APIView):
@@ -155,15 +163,8 @@ class VerifyEmailLinkAPIView(APIView):
     def post(self, request, *args, **kwargs):
         serializer = EmailVerificationSerializer(data=request.data)
         if serializer.is_valid():
-            token = serializer.validated_data['token']
-            try:
-                token_obj = EmailVerificationToken.objects.get(token=token)
-            except EmailVerificationToken.DoesNotExist:
-                return Response({'error': 'Invalid verification token.'}, status=status.HTTP_400_BAD_REQUEST)
-            
-            if not token_obj.is_valid():
-                log_user_activity(token_obj.user, 'Email Verification Failed', request=request, details='Token expired.')
-                return Response({'error': 'Verification token has expired.'}, status=status.HTTP_400_BAD_REQUEST)
+            # Access the stored token_obj from serializer's validated_data
+            token_obj = serializer.validated_data['token_obj'] 
             
             user = token_obj.user
             if user.is_active:
@@ -201,15 +202,9 @@ class UserLoginAPIView(APIView):
     def post(self, request, *args, **kwargs):
         serializer = UserLoginSerializer(data=request.data)
         if serializer.is_valid():
-            username = serializer.validated_data['username']
-            password = serializer.validated_data['password']
-            
-            try:
-                user = User.objects.get(username=username)
-            except User.DoesNotExist:
-                log_user_activity(None, 'Login Failed', request=request, details=f'User not found: {username}')
-                return Response({'error': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
-            
+            user = serializer.validated_data['user'] # Get user from serializer's validated_data
+            password = request.data.get('password') # Get password directly from request.data
+
             # Account Lockout Check
             if user.userprofile.lockout_until and user.userprofile.lockout_until > timezone.now():
                 remaining_time = int((user.userprofile.lockout_until - timezone.now()).total_seconds() / 60)
@@ -227,10 +222,12 @@ class UserLoginAPIView(APIView):
                 # Reset failed login attempts on successful login (or reactivation)
                 user.userprofile.failed_login_attempts = 0
                 user.userprofile.lockout_until = None
+                # NEW: Clear last_failed_login_ip on successful login
+                user.userprofile.last_failed_login_ip = None 
                 user.userprofile.save()
 
                 # Now authenticate and log in the user
-                authenticated_user = authenticate(request, username=username, password=password) # This should now work as user is active
+                authenticated_user = authenticate(request, username=user.username, password=password) # Use user.username for authenticate
 
                 if authenticated_user and authenticated_user.userprofile.is_2fa_enabled:
                     request.session['pre_2fa_user_id'] = authenticated_user.id
@@ -245,14 +242,28 @@ class UserLoginAPIView(APIView):
                     log_user_activity(user, 'Login Failed', request=request, details='Authentication failed after password check (unexpected).')
                     return Response({'error': 'Invalid credentials (authentication failed)'}, status=status.HTTP_401_UNAUTHORIZED)
             else:
-                # Increment failed login attempts for incorrect password
+                # Increment failed login attempts
                 user.userprofile.failed_login_attempts += 1
-                if user.userprofile.failed_login_attempts >= 5: # Lockout after 5 failed attempts
-                    user.userprofile.lockout_until = timezone.now() + timezone.timedelta(minutes=15) # Lock for 15 minutes
-                    log_user_activity(user, 'Account Locked', request=request, details='Too many failed login attempts.')
-                    return Response({'error': 'Too many failed login attempts. Account locked for 15 minutes.'}, status=status.HTTP_403_FORBIDDEN)
+                # NEW: Store the IP of the failed attempt
+                user.userprofile.last_failed_login_ip = request.META.get('REMOTE_ADDR')
+                
+                # Escalating lockout durations
+                lockout_duration_minutes = 0
+                if user.userprofile.failed_login_attempts >= 15: # e.g., 15 attempts -> 60 min lockout
+                    lockout_duration_minutes = 60
+                elif user.userprofile.failed_login_attempts >= 10: # e.g., 10 attempts -> 30 min lockout
+                    lockout_duration_minutes = 30
+                elif user.userprofile.failed_login_attempts >= 5: # e.g., 5 attempts -> 15 min lockout
+                    lockout_duration_minutes = 15
+                
+                if lockout_duration_minutes > 0:
+                    user.userprofile.lockout_until = timezone.now() + timezone.timedelta(minutes=lockout_duration_minutes)
+                    log_user_activity(user, 'Account Locked', request=request, details=f'Too many failed login attempts. Locked for {lockout_duration_minutes} minutes from IP: {user.userprofile.last_failed_login_ip}.')
+                    send_account_lockout_notification(user, lockout_duration_minutes) # Send notification
+                    return Response({'error': f'Too many failed login attempts. Account locked for {lockout_duration_minutes} minutes.'}, status=status.HTTP_403_FORBIDDEN)
+                
                 user.userprofile.save()
-                log_user_activity(user, 'Login Failed', request=request, details='Invalid credentials.')
+                log_user_activity(user, 'Login Failed', request=request, details=f'Invalid credentials from IP: {request.META.get("REMOTE_ADDR")}. Attempts: {user.userprofile.failed_login_attempts}.')
                 return Response({'error': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
         log_user_activity(None, 'Login Failed', request=request, details=f'Serializer errors: {serializer.errors}')
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -362,17 +373,21 @@ class ChangePasswordAPIView(APIView):
     permission_classes = [IsAuthenticated]
     def put(self, request, *args, **kwargs):
         user = request.user
-        serializer = PasswordChangeSerializer(data=request.data)
+        # Pass the request context to the serializer
+        serializer = PasswordChangeSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
             old_password = serializer.validated_data.get('old_password')
             new_password = serializer.validated_data.get('new_password')
             
+            # This check is crucial and correctly placed here in the view
             if not user.check_password(old_password):
                 log_user_activity(user, 'Password Change Failed', request=request, details='Incorrect old password.')
                 return Response({'old_password': ['Incorrect old password']}, status=status.HTTP_400_BAD_REQUEST)
             
             user.set_password(new_password)
             user.save()
+            # Save new password to history
+            PasswordHistory.objects.create(user=user, hashed_password=user.password)
             log_user_activity(user, 'Password Changed', request=request)
             return Response({'message': 'Password changed successfully'}, status=status.HTTP_200_OK)
         log_user_activity(user, 'Password Change Failed', request=request, details=f'Errors: {serializer.errors}')
@@ -404,7 +419,7 @@ class PasswordResetRequestAPIView(APIView):
             message = (f'Hi {user.username},\n\n'
                        f'Please use the following link to reset your password:\n\n'
                        f'{reset_url}\n\n'
-                       f'This link is valid for a limited time and can only be used once.')
+                       f'This link will expire in 24 hours.')
             send_mail(subject, message, 'a.kaisarfardin29@gmail.com', [user.email], fail_silently=False)
             
             log_user_activity(user, 'Password Reset Link Sent', request=request)
@@ -416,58 +431,17 @@ class PasswordResetConfirmAPIView(APIView):
     def post(self, request, *args, **kwargs):
         serializer = PasswordResetConfirmSerializer(data=request.data)
         if serializer.is_valid():
-            # --- DEBUGGING PRINTS START ---
-            print(f"\n--- Password Reset Confirm Debugging ---")
-            print(f"1. Request Data Received:")
-            print(f"   UID: {request.data.get('uid')}")
-            print(f"   Token: {request.data.get('token')}")
-            print(f"   New Password (first 5 chars): {request.data.get('new_password')[:5]}...")
-
-            try:
-                # The serializer's validate method should have already set self.user
-                user = serializer.user 
-                print(f"2. User Object Retrieved:")
-                print(f"   Username: {user.username}")
-                print(f"   User ID: {user.id}")
-                print(f"   is_active: {user.is_active}")
-                print(f"   Last Login: {user.last_login}")
-                print(f"   Date Joined: {user.date_joined}")
-                print(f"   Password Hash (first 10 chars): {user.password[:10]}...") # Only first few chars for security
-
-                # Re-check the token validity directly here for detailed output
-                token_generator = PasswordResetTokenGenerator()
-                is_token_valid = token_generator.check_token(user, serializer.validated_data['token'])
-                print(f"3. Result of token_generator.check_token(): {is_token_valid}")
-
-                if not is_token_valid:
-                    # This block should ideally be caught by the serializer's validation,
-                    # but it's here for extra debugging confirmation.
-                    print(f"4. Token is explicitly invalid after check. Returning 400.")
-                    log_user_activity(user, 'Password Reset Confirmation Failed', request=request, details='Token check failed in view.')
-                    return Response({'error': 'Invalid or expired password reset token.'}, status=status.HTTP_400_BAD_REQUEST)
-
-                user.set_password(serializer.validated_data['new_password'])
-                user.save()
-                print(f"4. Password successfully reset and user saved.")
-                log_user_activity(user, 'Password Reset Confirmed', request=request)
-                return Response({'message': 'Password has been reset successfully.'}, status=status.HTTP_200_OK)
-            except Exception as e:
-                print(f"5. An unexpected exception occurred: {e}")
-                log_user_activity(None, 'Password Reset Confirmation Failed', request=request, details=f'Unhandled exception: {e}')
-                return Response({'error': 'An unexpected error occurred during password reset.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-            finally:
-                print(f"--- End Password Reset Confirm Debugging ---\n")
-            # --- DEBUGGING PRINTS END ---
-        
-        # If serializer is not valid
-        print(f"\n--- Password Reset Confirm Debugging ---")
-        print(f"1. Serializer validation failed.")
-        print(f"   Errors: {serializer.errors}")
-        print(f"--- End Password Reset Confirm Debugging ---\n")
-        log_user_activity(None, 'Password Reset Confirmation Failed', request=request, details=f'Serializer errors: {serializer.errors}')
+            # The serializer's validate method should have already set self.user
+            user = serializer.user 
+            new_password = serializer.validated_data['new_password']
+            user.set_password(new_password)
+            user.save()
+            # Save new password to history
+            PasswordHistory.objects.create(user=user, hashed_password=user.password)
+            log_user_activity(user, 'Password Reset Confirmed', request=request)
+            return Response({'message': 'Password has been reset successfully.'}, status=status.HTTP_200_OK)
+        log_user_activity(None, 'Password Reset Confirmation Failed', request=request, details=f'Errors: {serializer.errors}')
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
 
 
 class Toggle2FAAPIView(APIView):
@@ -523,12 +497,9 @@ class DeleteAccountAPIView(APIView):
             return Response({'message': 'Account deleted successfully. You have been logged out.'}, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-# ReactivateAccountAPIView is removed as login handles reactivation
-# class ReactivateAccountAPIView(APIView):
-#     def post(self, request, *args, **kwargs):
-#         ... (This class is now removed)
+# ReactivateAccountAPIView is removed as login now handles reactivation
+# This view is no longer needed and is fully removed.
 
-# New View to retrieve user activity logs
 class UserActivityLogAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
