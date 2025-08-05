@@ -54,7 +54,7 @@ def send_otp_email(user, purpose):
     
     subject = f'Your {purpose} verification code'
     message = f'Your one-time password for {purpose} is: {otp_code}. It is valid for 5 minutes.'
-    send_mail(subject, message, 'your_email@gmail.com', [user.email], fail_silently=False)
+    send_mail(subject, message, 'a.kaisarfardin29@gmail.com', [user.email], fail_silently=False)
 
 # Helper function to send email verification link for signup
 def send_signup_verification_link(user):
@@ -85,7 +85,7 @@ def send_email_change_verification_link(user, new_email):
                f'Please click the link below to confirm this change:\n\n'
                f'{verification_url}\n\n'
                f'This link will expire in 24 hours.')
-    send_mail(subject, message, 'your_email@gmail.com', [new_email], fail_silently=False)
+    send_mail(subject, message, 'a.kaisarfardin29@gmail.com', [new_email], fail_silently=False)
 
 
 class UserSignupAPIView(APIView):
