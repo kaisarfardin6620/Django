@@ -398,7 +398,7 @@ class PasswordResetRequestAPIView(APIView):
                        f'Please use the following link to reset your password:\n\n'
                        f'{reset_url}\n\n'
                        f'This link is valid for a limited time and can only be used once.')
-            send_mail(subject, message, 'your_email@gmail.com', [user.email], fail_silently=False)
+            send_mail(subject, message, 'a.kaisarfardin29@gmail.com', [user.email], fail_silently=False)
             
             log_user_activity(user, 'Password Reset Link Sent', request=request)
             return Response({'message': 'If an account with that email/username exists, a password reset link has been sent.'}, status=status.HTTP_200_OK)
