@@ -3,20 +3,30 @@ from django.contrib.auth.models import User
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.utils import timezone
+from django.core.validators import RegexValidator
 import uuid
 
 class UserProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='userprofile')
     profile_picture = models.ImageField(upload_to='profile_pics/', blank=True, null=True)
-    bio = models.TextField(blank=True, null=True) # Added bio field back for consistency with serializers
+    bio = models.TextField(blank=True, null=True)
     date_of_birth = models.DateField(blank=True, null=True)
     gender = models.CharField(max_length=10, blank=True, null=True, choices=[('Male', 'Male'), ('Female', 'Female'), ('Other', 'Other')])
-    phone_number = models.CharField(max_length=20, blank=True, null=True)
+    phone_number = models.CharField(
+        max_length=20,
+        blank=True,
+        null=True,
+        validators=[
+            RegexValidator(
+                regex=r'^\+?1?\d{9,15}$',
+                message="Phone number must be in the format: '+1234567890'. Up to 15 digits allowed."
+            )
+        ]
+    )
     address = models.TextField(blank=True, null=True)
     is_2fa_enabled = models.BooleanField(default=False)
     failed_login_attempts = models.IntegerField(default=0)
     lockout_until = models.DateTimeField(null=True, blank=True)
-    # NEW: Field to store the IP of the last failed login attempt
     last_failed_login_ip = models.GenericIPAddressField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -31,19 +41,20 @@ class UserProfile(models.Model):
             return today.year - self.date_of_birth.year - ((today.month, today.day) < (self.date_of_birth.month, self.date_of_birth.day))
         return None
 
-# Signal to create or update UserProfile when User is created/updated
+    class Meta:
+        indexes = [
+            models.Index(fields=['user']),
+            models.Index(fields=['phone_number']),
+        ]
+
 @receiver(post_save, sender=User)
 def create_or_update_user_profile(sender, instance, created, **kwargs):
     if created:
         UserProfile.objects.create(user=instance)
-    # Ensure that the userprofile exists before trying to save it.
-    # This handles cases where a User might be created without the signal firing immediately,
-    # or if the userprofile was deleted manually.
     if hasattr(instance, 'userprofile'):
         instance.userprofile.save()
     else:
         UserProfile.objects.create(user=instance)
-
 
 class OTP(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
@@ -53,14 +64,14 @@ class OTP(models.Model):
         ('2fa', 'Two-Factor Authentication'),
         ('password_reset', 'Password Reset'),
     ]
-    purpose = models.CharField(max_length=50, choices=purpose_choices) # e.g., '2fa', 'password_reset', 'signup'
+    purpose = models.CharField(max_length=50, choices=purpose_choices)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
     is_used = models.BooleanField(default=False)
 
     def save(self, *args, **kwargs):
-        if not self.pk: # Only set expires_at on creation
-            self.expires_at = timezone.now() + timezone.timedelta(minutes=5) # OTP valid for 5 minutes
+        if not self.pk:
+            self.expires_at = timezone.now() + timezone.timedelta(minutes=5)
         super().save(*args, **kwargs)
 
     def is_valid(self):
@@ -69,6 +80,11 @@ class OTP(models.Model):
     def __str__(self):
         return f"OTP for {self.user.username} ({self.purpose})"
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['code']),
+        ]
+
 class EmailVerificationToken(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
     token = models.UUIDField(default=uuid.uuid4, unique=True)
@@ -76,8 +92,8 @@ class EmailVerificationToken(models.Model):
     expires_at = models.DateTimeField()
 
     def save(self, *args, **kwargs):
-        if not self.pk: # Only set expires_at on creation
-            self.expires_at = timezone.now() + timezone.timedelta(hours=24) # Link valid for 24 hours
+        if not self.pk:
+            self.expires_at = timezone.now() + timezone.timedelta(hours=24)
         super().save(*args, **kwargs)
 
     def is_valid(self):
@@ -85,6 +101,11 @@ class EmailVerificationToken(models.Model):
 
     def __str__(self):
         return f"Email verification token for {self.user.username}"
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['token']),
+        ]
 
 class EmailChangeToken(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
@@ -94,8 +115,8 @@ class EmailChangeToken(models.Model):
     expires_at = models.DateTimeField()
 
     def save(self, *args, **kwargs):
-        if not self.pk: # Only set expires_at on creation
-            self.expires_at = timezone.now() + timezone.timedelta(hours=24) # Link valid for 24 hours
+        if not self.pk:
+            self.expires_at = timezone.now() + timezone.timedelta(hours=24)
         super().save(*args, **kwargs)
 
     def is_valid(self):
@@ -104,30 +125,32 @@ class EmailChangeToken(models.Model):
     def __str__(self):
         return f"Email change token for {self.user.username} to {self.new_email}"
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['token']),
+        ]
+
 class UserActivityLog(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True) # Nullable for unauthenticated actions
-    action = models.CharField(max_length=255) # e.g., 'Login Success', 'Login Failed', 'Password Change'
-    timestamp = models.DateTimeField(auto_now_add=True)
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    activity_type = models.CharField(max_length=100)
     ip_address = models.GenericIPAddressField(null=True, blank=True)
-    user_agent = models.TextField(null=True, blank=True)
+    user_agent = models.CharField(max_length=255, null=True, blank=True)
+    timestamp = models.DateTimeField(auto_now_add=True)
     details = models.TextField(null=True, blank=True)
 
-    class Meta:
-        ordering = ['-timestamp'] # Order by most recent first
-
     def __str__(self):
-        user_info = self.user.username if self.user else 'Anonymous'
-        return f"[{self.timestamp.strftime('%Y-%m-%d %H:%M:%S')}] {user_info}: {self.action}"
+        return f"{self.user.username} - {self.activity_type} at {self.timestamp}"
 
 class PasswordHistory(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='password_history')
-    hashed_password = models.CharField(max_length=128) # Stores the hashed password
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    hashed_password = models.CharField(max_length=128)
     created_at = models.DateTimeField(auto_now_add=True)
 
-    class Meta:
-        verbose_name_plural = "Password Histories"
-        ordering = ['-created_at'] # Most recent first
-
-    def __str__(self):
-        return f"Password history for {self.user.username} on {self.created_at.strftime('%Y-%m-%d')}"
-
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        # Keep only the 10 most recent password history entries
+        old_entries = PasswordHistory.objects.filter(user=self.user).order_by('-created_at')
+        if old_entries.count() > 10:
+            # Get IDs of entries to delete (beyond the 10 most recent)
+            ids_to_delete = old_entries[10:].values_list('id', flat=True)
+            PasswordHistory.objects.filter(id__in=ids_to_delete).delete()
