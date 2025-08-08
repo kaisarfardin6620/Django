@@ -43,15 +43,15 @@ def check_breached_password(password):
 # Serializers
 class UserSignupSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, validators=[validate_strong_password])
-    password2 = serializers.CharField(write_only=True)
+    confirm_password = serializers.CharField(write_only=True)
     is_active = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = User
-        fields = ['username', 'email', 'password', 'password2', 'is_active']
+        fields = ['username', 'email', 'password', 'confirm_password', 'is_active']
 
     def validate(self, data):
-        if data['password'] != data['password2']:
+        if data['password'] != data['confirm_password']:
             raise serializers.ValidationError("Passwords do not match.")
         if User.objects.filter(email=data['email']).exists():
             raise serializers.ValidationError("An account with this email address already exists.")
@@ -60,7 +60,7 @@ class UserSignupSerializer(serializers.ModelSerializer):
         return data
 
     def create(self, validated_data):
-        validated_data.pop('password2')
+        validated_data.pop('confirm_password')
         user = User.objects.create_user(
             username=validated_data['username'],
             email=validated_data['email'],
@@ -90,7 +90,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = UserProfile
-        fields = ['username', 'email', 'is_2fa_enabled', 'profile_picture']
+        fields = ['username', 'email', 'is_2fa_enabled', 'profile_picture', 'date_of_birth', 'age', 'first_name', 'last_name', 'gender', 'bio', 'phone_number',   'failed_login_attempts', 'lockout_until', 'last_failed_login_ip']
 
 class ProfilePictureUploadSerializer(serializers.ModelSerializer):
     class Meta:
@@ -100,14 +100,14 @@ class ProfilePictureUploadSerializer(serializers.ModelSerializer):
 class PasswordChangeSerializer(serializers.Serializer):
     old_password = serializers.CharField(required=True, write_only=True)
     new_password = serializers.CharField(required=True, write_only=True, validators=[validate_strong_password])
-    new_password2 = serializers.CharField(required=True, write_only=True)
+    confirm_new_password = serializers.CharField(required=True, write_only=True)
 
     def validate(self, data):
         user = self.context['request'].user
         if not user.check_password(data.get('old_password')):
             raise serializers.ValidationError({'old_password': 'Wrong password.'})
-        if data.get('new_password') != data.get('new_password2'):
-            raise serializers.ValidationError({'new_password2': 'New passwords must match.'})
+        if data.get('new_password') != data.get('new_password'):
+            raise serializers.ValidationError({'new_password': 'New passwords must match.'})
         if user.check_password(data.get('new_password')):
             raise serializers.ValidationError({'new_password': 'New password cannot be the same as the old password.'})
         if check_breached_password(data.get('new_password')):
@@ -128,7 +128,7 @@ class PasswordResetRequestSerializer(serializers.Serializer):
 
 class PasswordResetConfirmSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True, validators=[validate_strong_password])
-    password2 = serializers.CharField(write_only=True)
+    confirm_password = serializers.CharField(write_only=True)
     uidb64 = serializers.CharField()
     token = serializers.CharField()
 

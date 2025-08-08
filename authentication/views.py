@@ -35,11 +35,10 @@ from .serializers import (
 
 User = get_user_model()
 
-# Custom helper function to log user activity
 def log_user_activity(user, activity_type, request=None, details=None):
     ip_address = request.META.get('HTTP_X_FORWARDED_FOR', request.META.get('REMOTE_ADDR'))
     if ip_address:
-        ip_address = ip_address.split(',')[0].strip()  # Get the first IP in case of proxies
+        ip_address = ip_address.split(',')[0].strip()  
     UserActivityLog.objects.create(
         user=user,
         activity_type=activity_type,
@@ -57,8 +56,6 @@ class UserSignupAPIView(APIView):
         if serializer.is_valid():
             user = serializer.save()
             log_user_activity(user, activity_type='User Signup', request=request)
-
-            # Choose one of the following verification methods by commenting out the other
 
             # Option 1: Email Link Verification
             token = EmailVerificationToken.objects.create(user=user)

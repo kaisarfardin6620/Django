@@ -23,6 +23,10 @@ class UserProfile(models.Model):
             )
         ]
     )
+    full_name = models.CharField(max_length=100, blank=True, null=True)
+    first_name = models.CharField(max_length=30, blank=True, null=True)
+    last_name = models.CharField(max_length=30, blank=True, null=True)
+    email = models.EmailField(blank=True, null=True)
     address = models.TextField(blank=True, null=True)
     is_2fa_enabled = models.BooleanField(default=False)
     failed_login_attempts = models.IntegerField(default=0)

@@ -25,14 +25,14 @@ class UserProfileAdmin(admin.ModelAdmin):
 # Register the OTP model
 @admin.register(OTP)
 class OTPAdmin(admin.ModelAdmin):
-    list_display = ['id', 'user', 'code', 'purpose', 'is_used', 'created_at']
+    list_display = ['user', 'code', 'purpose', 'is_used', 'created_at']
     list_filter = ['purpose', 'is_used']
     search_fields = ['user__username', 'code']
 
 # Register the EmailVerificationToken model
 @admin.register(EmailVerificationToken)
 class EmailVerificationTokenAdmin(admin.ModelAdmin):
-    list_display = ['id', 'user', 'token', 'created_at', 'expires_at', 'is_valid']
+    list_display = ['user', 'token', 'created_at', 'expires_at', 'is_valid']
     search_fields = ['user__username', 'token']
     list_filter = ['created_at', 'expires_at']
 
@@ -47,7 +47,7 @@ class UserActivityLogAdmin(admin.ModelAdmin):
 # Register the EmailChangeToken model
 @admin.register(EmailChangeToken)
 class EmailChangeTokenAdmin(admin.ModelAdmin):
-    list_display = ['id', 'user', 'new_email', 'token', 'created_at', 'expires_at', 'is_valid']
+    list_display = ['user', 'new_email', 'token', 'created_at', 'expires_at', 'is_valid']
     search_fields = ['user__username', 'new_email', 'token']
     list_filter = ['created_at', 'expires_at']
 
