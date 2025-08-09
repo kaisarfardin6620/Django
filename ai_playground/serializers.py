@@ -17,12 +17,24 @@ class AttachmentSerializer(serializers.ModelSerializer):
         return obj.file.url
 
 
+# class MessageSerializer(serializers.ModelSerializer):
+#     attachments = AttachmentSerializer(source='conversation.attachments', many=True, read_only=True)
+#     class Meta:
+#         model = Message
+#         fields = ['id','conversation','role','text','metadata','created_at','attachments']
+#         read_only_fields = ['id','created_at','attachments']
+
 class MessageSerializer(serializers.ModelSerializer):
-    attachments = AttachmentSerializer(source='conversation.attachments', many=True, read_only=True)
     class Meta:
         model = Message
-        fields = ['id','conversation','role','text','metadata','created_at','attachments']
-        read_only_fields = ['id','created_at','attachments']
+        fields = ['id', 'conversation', 'text']  # no 'role', no 'created_at' needed here
+
+    def validate_conversation(self, value):
+        # Optional: check that the conversation belongs to the user
+        request = self.context.get('request')
+        if value.created_by != request.user:
+            raise serializers.ValidationError("You don't own this conversation.")
+        return value        
 
 
 class ConversationSerializer(serializers.ModelSerializer):

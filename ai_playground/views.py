@@ -6,6 +6,11 @@ from .models import AIPlayground, Conversation, Message, Attachment
 from .serializers import ConversationSerializer, MessageSerializer, AttachmentSerializer
 from django.shortcuts import get_object_or_404
 from rest_framework.parsers import MultiPartParser, FormParser
+from django.conf import settings
+import openai
+
+
+openai.api_key = settings.OPENAI_API_KEY
 
 class ConversationViewSet(viewsets.ModelViewSet):
     queryset = Conversation.objects.all()
@@ -49,6 +54,23 @@ class ConversationViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
+# class MessageViewSet(viewsets.ModelViewSet):
+#     serializer_class = MessageSerializer
+#     permission_classes = [permissions.IsAuthenticated]
+
+#     def get_queryset(self):
+#         convo_id = self.request.query_params.get('conversation')
+#         qs = Message.objects.filter(conversation__created_by=self.request.user)
+#         if convo_id:
+#             qs = qs.filter(conversation_id=convo_id)
+#         return qs
+
+#     def perform_create(self, serializer):
+#         conversation = serializer.validated_data['conversation']
+#         if conversation.created_by != self.request.user:
+#             raise PermissionError("Not allowed")
+#         serializer.save()
+
 class MessageViewSet(viewsets.ModelViewSet):
     serializer_class = MessageSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -61,11 +83,32 @@ class MessageViewSet(viewsets.ModelViewSet):
         return qs
 
     def perform_create(self, serializer):
-        conversation = serializer.validated_data['conversation']
+        # Save user message
+        message = serializer.save(role='user')
+
+        conversation = message.conversation
         if conversation.created_by != self.request.user:
             raise PermissionError("Not allowed")
-        serializer.save()
 
+        # Get last N messages for context
+        history = conversation.messages.order_by('created_at').values('role', 'text')
+        formatted_history = [{"role": m["role"], "content": m["text"]} for m in history]
+
+        # Call GPT
+        response = openai.ChatCompletion.create(
+            model="gpt-4o-mini",
+            messages=formatted_history,
+            temperature=0.7,
+        )
+
+        ai_text = response.choices[0].message["content"]
+
+        # Save GPT reply
+        Message.objects.create(
+            conversation=conversation,
+            role='assistant',
+            text=ai_text
+        )
 
 class AttachmentViewSet(viewsets.ModelViewSet):
     serializer_class = AttachmentSerializer

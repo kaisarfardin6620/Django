@@ -29,3 +29,4 @@ ENV/
 
 # Local settings and environment variables
 .env
+db.sqlite3
