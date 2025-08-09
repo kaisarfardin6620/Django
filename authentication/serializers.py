@@ -75,13 +75,21 @@ class SignupSerializer(serializers.ModelSerializer):
 
 class LoginSerializer(serializers.Serializer):
     username = serializers.CharField()
-    password = serializers.CharField(write_only=True)
+    password = serializers.CharField()
 
     def validate(self, data):
-        user = authenticate(username=data.get('username'), password=data.get('password'))
-        if not user:
+        username = data.get('username')
+        password = data.get('password')
+        try:
+            user = User.objects.get(username=username)
+        except User.DoesNotExist:
             raise serializers.ValidationError("Invalid credentials.")
-        
+
+        if not user.check_password(password):
+            raise serializers.ValidationError("Invalid credentials.")
+
+        # Return user even if inactive
+        data['user'] = user
         return user
 
 class OTPVerificationSerializer(serializers.Serializer):

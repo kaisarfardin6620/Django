@@ -44,5 +44,5 @@ urlpatterns = [
     path('password/reset/', PasswordResetRequestAPIView.as_view(), name='password-reset-request'),
     path('password/reset/confirm/', PasswordResetConfirmAPIView.as_view(), name='password-reset-confirm'),
     path('email/change/request/', EmailChangeRequestAPIView.as_view(), name='email-change-request'),
-    path('email/change/confirm/', EmailChangeConfirmAPIView.as_view(), name='email-change-confirm'),
+    path('email-change-confirm/', EmailChangeConfirmAPIView.as_view(), name='email-change-confirm-alias'),
 ]

@@ -17,17 +17,10 @@ Including another URLconf
 
 from django.contrib import admin
 from django.urls import path, include
-
-# Corrected import: 'UserSignupAPIView' is the correct class name from your views.py
 from authentication.views import MyTokenObtainPairView, UserSignupAPIView
 
 urlpatterns = [
-    # Django admin site
     path('admin/', admin.site.urls),
-    
-    # Include the URLs from your authentication app
     path('auth/', include('authentication.urls')),
-
-    # You might have other app URLs here
-    # path('', include('myapp.urls')), 
+    path('ai/', include('ai_playground.urls')),
 ]

@@ -260,48 +260,17 @@ class LoginView(APIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data
 
-        # If user is inactive → Reactivation flow
+        # If user is inactive → Reactivate immediately (like Facebook login)
         if not user.is_active:
-            auth_token = AuthToken.objects.create(
-                user=user,
-                token_type='reactivation',
-                expires_at=timezone.now() + timezone.timedelta(minutes=15)
-            )
-
-            if settings.USE_OTP_VERIFICATION:
-                otp = str(random.randint(100000, 999999))
-                auth_token.otp_code = otp
-                auth_token.save()
-
-                send_mail(
-                    subject="Reactivate Your Account",
-                    message=f"Your account reactivation code is: {otp}",
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[user.email],
-                    fail_silently=False
-                )
-            else:
-                link = f"{settings.FRONTEND_URL}/reactivate-account?token={auth_token.token}"
-                send_mail(
-                    subject="Reactivate Your Account",
-                    message=f"Click the following link to reactivate your account:\n{link}",
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[user.email],
-                    fail_silently=False
-                )
-
-            # Log reactivation attempt
+            user.is_active = True
+            user.save()
             UserActivityLog.objects.create(
                 user=user,
-                activity_type='REACTIVATE_REQUEST',
+                activity_type='REACTIVATE',
                 ip_address=get_client_ip(request),
                 user_agent=request.META.get('HTTP_USER_AGENT', '')
             )
-
-            return Response({
-                "reactivation_required": True,
-                "message": "Reactivation email sent."
-            }, status=status.HTTP_200_OK)
+            # Continue to 2FA or normal login as below
 
         # If user is active but 2FA is enabled → 2FA flow
         if hasattr(user, 'profile') and user.profile.is_2fa_enabled:
@@ -311,27 +280,18 @@ class LoginView(APIView):
                 expires_at=timezone.now() + timezone.timedelta(minutes=15)
             )
 
-            if settings.USE_OTP_VERIFICATION:
-                otp = str(random.randint(100000, 999999))
-                auth_token.otp_code = otp
-                auth_token.save()
+            # Always send OTP for 2FA, regardless of USE_OTP_VERIFICATION
+            otp = str(random.randint(100000, 999999))
+            auth_token.otp_code = otp
+            auth_token.save()
 
-                send_mail(
-                    subject="Your 2FA OTP Code",
-                    message=f"Your one-time login code is: {otp}",
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[user.email],
-                    fail_silently=False
-                )
-            else:
-                link = f"{settings.FRONTEND_URL}/verify-2fa?token={auth_token.token}"
-                send_mail(
-                    subject="Verify Your Login",
-                    message=f"Click the following link to verify your login:\n{link}",
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[user.email],
-                    fail_silently=False
-                )
+            send_mail(
+                subject="Your 2FA OTP Code",
+                message=f"Your one-time login code is: {otp}",
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+                fail_silently=False
+            )
 
             # Log 2FA request
             UserActivityLog.objects.create(
@@ -440,23 +400,15 @@ class Verify2FALoginView(APIView):
         except User.DoesNotExist:
             return Response({"error": "Invalid username"}, status=status.HTTP_404_NOT_FOUND)
 
-        # Detect whether this is reactivation or 2FA verification
-        if settings.USE_OTP_VERIFICATION:
-            token_obj = AuthToken.objects.filter(
-                user=user,
-                token_type__in=['2fa', 'reactivation'],
-                otp_code=otp_or_token,
-                is_used=False,
-                expires_at__gt=timezone.now()
-            ).first()
-        else:
-            token_obj = AuthToken.objects.filter(
-                user=user,
-                token_type__in=['2fa', 'reactivation'],
-                token=otp_or_token,
-                is_used=False,
-                expires_at__gt=timezone.now()
-            ).first()
+
+        # Always check OTP code for 2FA verification
+        token_obj = AuthToken.objects.filter(
+            user=user,
+            token_type__in=['2fa', 'reactivation'],
+            otp_code=otp_or_token,
+            is_used=False,
+            expires_at__gt=timezone.now()
+        ).first()
 
         if not token_obj:
             return Response({"error": "Invalid or expired verification"}, status=status.HTTP_400_BAD_REQUEST)
@@ -617,7 +569,8 @@ class PasswordResetRequestAPIView(APIView):
                 
                 # Send the email with the reset link
                 subject = 'Password Reset Request'
-                message = f'Hi {user.username},\n\nPlease use the following token to reset your password: {token.token}\n\nThis token is valid for 15 minutes.'
+                reset_link = f"http://127.0.0.1:8001/auth/password/reset/confirm/?token={token.token}"
+                message = f'Hi {user.username},\n\nPlease click the link to reset your password: {reset_link}\n\nThis link is valid for 15 minutes.'
                 send_email(subject, message, [user.email])
 
                 return Response(
@@ -640,61 +593,65 @@ class PasswordResetConfirmAPIView(APIView):
 
     def post(self, request):
         try:
-            serializer = PasswordResetConfirmSerializer(data=request.data)
-            if serializer.is_valid():
-                token_uuid = serializer.validated_data['token']
-                new_password = serializer.validated_data['new_password']
+            # Accept token from body or query params, passwords from body
+            token_uuid = request.data.get('token') or request.GET.get('token')
+            new_password = request.data.get('new_password')
+            new_password_confirmation = request.data.get('new_password_confirmation')
 
-                # Fetch the token and validate it
-                try:
-                    token = AuthToken.objects.get(
-                        token=token_uuid,
-                        token_type='password_reset',
-                        is_used=False,
-                        expires_at__gt=timezone.now()
-                    )
-                except AuthToken.DoesNotExist:
-                    return Response({'error': 'Invalid or expired token.'}, status=status.HTTP_400_BAD_REQUEST)
+            if not token_uuid or not new_password or not new_password_confirmation:
+                return Response({'error': 'Token and new password fields are required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-                user = token.user
+            # Optionally, validate password match here (if not handled in serializer)
+            if new_password != new_password_confirmation:
+                return Response({'error': 'Passwords do not match.'}, status=status.HTTP_400_BAD_REQUEST)
 
-                # Maintain only last 10 password histories
-                histories = PasswordHistory.objects.filter(user=user).order_by('-created_at')
-                if histories.count() >= 10:
-                    # Get the oldest password history (by created_at ascending)
-                    oldest_password_history = PasswordHistory.objects.filter(user=user).order_by('created_at').first()
-                    if oldest_password_history:
-                        oldest_password_history.delete()
-
-                # Check for password reuse
-                for history in PasswordHistory.objects.filter(user=user):
-                    if check_password(new_password, history.hashed_password):
-                        return Response({'error': 'Cannot reuse recent passwords.'}, status=status.HTTP_400_BAD_REQUEST)
-
-                # Set and save new password
-                user.set_password(new_password)
-                user.save()
-
-                # Save new password to history
-                PasswordHistory.objects.create(
-                    user=user,
-                    hashed_password=user.password
+            # Fetch the token and validate it
+            try:
+                token = AuthToken.objects.get(
+                    token=token_uuid,
+                    token_type='password_reset',
+                    is_used=False,
+                    expires_at__gt=timezone.now()
                 )
+            except AuthToken.DoesNotExist:
+                return Response({'error': 'Invalid or expired token.'}, status=status.HTTP_400_BAD_REQUEST)
 
-                # Mark token as used
-                token.is_used = True
-                token.save()
+            user = token.user
 
-                return Response({'message': 'Password reset successfully.'}, status=status.HTTP_200_OK)
+            # Maintain only last 10 password histories
+            histories = PasswordHistory.objects.filter(user=user).order_by('-created_at')
+            if histories.count() >= 10:
+                # Get the oldest password history (by created_at ascending)
+                oldest_password_history = PasswordHistory.objects.filter(user=user).order_by('created_at').first()
+                if oldest_password_history:
+                    oldest_password_history.delete()
 
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            # Check for password reuse
+            for history in PasswordHistory.objects.filter(user=user):
+                if check_password(new_password, history.hashed_password):
+                    return Response({'error': 'Cannot reuse recent passwords.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Set and save new password
+            user.set_password(new_password)
+            user.save()
+
+            # Save new password to history
+            PasswordHistory.objects.create(
+                user=user,
+                hashed_password=user.password
+            )
+
+            # Mark token as used
+            token.is_used = True
+            token.save()
+
+            return Response({'message': 'Password reset successfully.'}, status=status.HTTP_200_OK)
 
         except Exception as e:
             print(f"Error in PasswordResetConfirmAPIView: {e}")
             return Response(
                 {'error': 'An internal server error occurred during password reset confirmation.'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class Toggle2FAAPIView(APIView):
     """
@@ -750,17 +707,22 @@ class DeleteAccountAPIView(APIView):
     
     def delete(self, request):
         """
-        Delete the authenticated user's account.
+        Delete the authenticated user's account after validating password.
         """
         user = request.user
-        
+        password = request.data.get('password')
+        if not password:
+            return Response({'error': 'Password is required to delete account.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not user.check_password(password):
+            return Response({'error': 'Incorrect password.'}, status=status.HTTP_400_BAD_REQUEST)
+
         # Blacklist all JWT tokens for this user before deletion
         for token in OutstandingToken.objects.filter(user=user):
             BlacklistedToken.objects.get_or_create(token=token)
-        
+
         # Delete the user (cascading deletes will handle related objects)
         user.delete()
-        
+
         return Response(
             {'message': 'Account deleted successfully.'}, 
             status=status.HTTP_204_NO_CONTENT
@@ -819,31 +781,31 @@ class EmailChangeConfirmAPIView(APIView):
     """
     permission_classes = [AllowAny]
     def post(self, request):
-        serializer = EmailChangeConfirmSerializer(data=request.data)
-        if serializer.is_valid():
-            token_uuid = serializer.validated_data['token']
-            try:
-                token = AuthToken.objects.get(
-                    token=token_uuid,
-                    token_type='email_change',
-                    is_used=False,
-                    expires_at__gt=timezone.now()
-                )
+        # Accept token from body or query params
+        token_uuid = request.data.get('token') or request.GET.get('token')
+        if not token_uuid:
+            return Response({'error': 'Token is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            token = AuthToken.objects.get(
+                token=token_uuid,
+                token_type='email_change',
+                is_used=False,
+                expires_at__gt=timezone.now()
+            )
 
-                user = token.user
-                user.email = token.new_email
-                user.save()
-                
-                token.is_used = True
-                token.save()
+            user = token.user
+            user.email = token.new_email
+            user.save()
+            
+            token.is_used = True
+            token.save()
 
-                return Response(
-                    {'message': 'Email updated successfully'},
-                    status=status.HTTP_200_OK
-                )
-            except AuthToken.DoesNotExist:
-                return Response({'error': 'Invalid or expired token'}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'message': 'Email updated successfully'},
+                status=status.HTTP_200_OK
+            )
+        except AuthToken.DoesNotExist:
+            return Response({'error': 'Invalid or expired token'}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class UserActivityLogAPIView(APIView):
