@@ -1,391 +1,855 @@
+from django.conf import settings
+from django.contrib.auth import authenticate
+from django.core.mail import send_mail
+from django.utils import timezone
+from django.contrib.auth.models import User
+from django.contrib.auth.hashers import check_password, make_password
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated, AllowAny
-from django.contrib.auth import get_user_model, authenticate, login, logout
-from django.core.mail import send_mail
-from django.contrib.auth.tokens import PasswordResetTokenGenerator
-from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
-from django.utils.encoding import force_bytes, force_str
-from django.utils import timezone
-from django.urls import reverse
-from django.conf import settings
-import random
-from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
+from rest_framework_simplejwt.tokens import RefreshToken, BlacklistMixin
 from rest_framework_simplejwt.views import TokenObtainPairView
-from rest_framework_simplejwt.tokens import RefreshToken
-from .models import UserProfile, OTP, EmailVerificationToken, UserActivityLog, EmailChangeToken, PasswordHistory
+from .models import AuthToken, UserProfile, PasswordHistory, UserActivityLog
 from .serializers import (
-    UserSignupSerializer,
-    UserLoginSerializer,
-    UserProfileSerializer,
-    PasswordChangeSerializer,
-    PasswordResetRequestSerializer,
-    PasswordResetConfirmSerializer,
-    OTPVerificationSerializer,
-    AccountDeactivateSerializer,
-    AccountDeleteSerializer,
-    EmailVerificationSerializer,
-    ProfilePictureUploadSerializer,
-    EmailChangeRequestSerializer,
-    EmailChangeConfirmSerializer,
+    SignupSerializer, LoginSerializer, OTPVerificationSerializer,
+    PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
+    ChangePasswordSerializer, ProfileSerializer, UpdateProfileSerializer,
+    ProfilePictureSerializer, EmailChangeRequestSerializer,
+    EmailChangeConfirmSerializer, ResendVerificationSerializer,
     MyTokenObtainPairSerializer,
-    UserActivityLogSerializer
+    UserActivityLogSerializer,
+    Verify2FALoginSerializer
 )
+import uuid
+import random
+from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 
-User = get_user_model()
+# Helper function to generate a 6-digit OTP
+def generate_otp():
+    return str(random.randint(100000, 999999))
 
-def log_user_activity(user, activity_type, request=None, details=None):
-    ip_address = request.META.get('HTTP_X_FORWARDED_FOR', request.META.get('REMOTE_ADDR'))
-    if ip_address:
-        ip_address = ip_address.split(',')[0].strip()  
-    UserActivityLog.objects.create(
-        user=user,
-        activity_type=activity_type,
-        ip_address=ip_address,
-        user_agent=request.META.get('HTTP_USER_AGENT', ''),
-        details=details
-    )
+# Helper function to get the client's IP address
+def get_client_ip(request):
+    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+    if x_forwarded_for:
+        ip = x_forwarded_for.split(',')[0]
+    else:
+        ip = request.META.get('REMOTE_ADDR')
+    return ip
 
+# Helper function to send an email
+def send_email(subject, message, recipient_list):
+    try:
+        send_mail(
+            subject,
+            message,
+            settings.DEFAULT_FROM_EMAIL,
+            recipient_list,
+            fail_silently=False,
+        )
+        return True
+    except Exception as e:
+        # Log the error for debugging
+        print(f"Error sending email: {e}")
+        return False
+
+# Helper function to send the OTP email
+def send_otp_email(user, otp):
+    subject = 'Your OTP for account verification'
+    message = f'Hi {user.username}, your One-Time Password (OTP) is: {otp}. It is valid for 15 minutes.'
+    return send_email(subject, message, [user.email])
+
+# Helper function to send a verification email link
+def send_verification_email(user, token):
+    subject = 'Account Verification'
+    # NOTE: Ensure this URL matches a path in your urls.py file.
+    # The URL should handle a GET request with a 'token' parameter.
+    message = f'Hi {user.username}, please click the link to verify your account: http://127.0.0.1:8001/auth/verify-email/?token={token.token}'
+    return send_email(subject, message, [user.email])
+
+# View for user signup
 class UserSignupAPIView(APIView):
+    """
+    Handles user signup and creates a related UserProfile.
+    The verification method (OTP or email link) is determined by the
+    USE_OTP_VERIFICATION setting.
+    """
     permission_classes = [AllowAny]
-    throttle_classes = [AnonRateThrottle]
 
     def post(self, request):
-        serializer = UserSignupSerializer(data=request.data)
+        serializer = SignupSerializer(data=request.data)
         if serializer.is_valid():
             user = serializer.save()
-            log_user_activity(user, activity_type='User Signup', request=request)
+            
+            # Use getattr to safely check for the setting
+            use_otp = getattr(settings, 'USE_OTP_VERIFICATION', False)
 
-            # Option 1: Email Link Verification
-            token = EmailVerificationToken.objects.create(user=user)
-            verification_url = request.build_absolute_uri(reverse('verify-email'))
-            send_mail(
-                'Verify your email address',
-                f'Please send a POST request to {verification_url} with the following JSON body: {{"token": "{token.token}"}}',
-                settings.DEFAULT_FROM_EMAIL,
-                [user.email],
-                fail_silently=False,
-            )
-
-            # Option 2: OTP Verification
-            # otp = ''.join(random.choices('0123456789', k=6))
-            # OTP.objects.create(
-            #     user=user,
-            #     code=otp,
-            #     purpose='signup',
-            #     expires_at=timezone.now() + timezone.timedelta(minutes=5)
-            # )
-            # send_mail(
-            #     'Your Signup OTP',
-            #     f'Your one-time password for signup verification is: {otp}',
-            #     settings.DEFAULT_FROM_EMAIL,
-            #     [user.email],
-            #     fail_silently=False,
-            # )
-
-            return Response({'message': 'User created successfully. Verification email sent.'}, status=status.HTTP_201_CREATED)
+            if use_otp:
+                # Generate a 6-digit OTP and save it in the new otp_code field.
+                otp = generate_otp()
+                AuthToken.objects.create(
+                    user=user,
+                    otp_code=otp,
+                    token_type='signup_otp',
+                )
+                send_otp_email(user, otp)
+                
+                return Response(
+                    {"message": "User registered successfully. An OTP has been sent to your email."},
+                    status=status.HTTP_201_CREATED
+                )
+            else:
+                # Generate a UUID token for email verification links.
+                token = AuthToken.objects.create(
+                    user=user,
+                    token_type='signup_link',
+                )
+                send_verification_email(user, token)
+                
+                return Response(
+                    {"message": "User registered successfully. A verification email has been sent."},
+                    status=status.HTTP_201_CREATED
+                )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+# View for OTP verification during signup
 class VerifySignupOTPView(APIView):
+    """
+    API view to handle OTP verification for signup.
+    """
     permission_classes = [AllowAny]
 
     def post(self, request):
         serializer = OTPVerificationSerializer(data=request.data)
         if serializer.is_valid():
+            username = serializer.validated_data['username']
+            otp = serializer.validated_data['otp']
+            
+            # Use a more granular try-except block to provide better feedback
             try:
-                otp_obj = OTP.objects.get(code=serializer.validated_data['otp'], purpose='signup', is_used=False)
-                if not otp_obj.is_valid():
-                    return Response({'message': 'Invalid or expired OTP.'}, status=status.HTTP_400_BAD_REQUEST)
-                user = otp_obj.user
-                if user.is_active:
-                    return Response({'message': 'Account already verified.'}, status=status.HTTP_200_OK)
-                user.is_active = True
-                user.save()
-                otp_obj.is_used = True
-                otp_obj.save()
-                log_user_activity(user, activity_type='Signup OTP Verified', request=request)
-                return Response({'message': 'Account verified successfully.'}, status=status.HTTP_200_OK)
-            except OTP.DoesNotExist:
-                return Response({'message': 'Invalid OTP.'}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                user = User.objects.get(username=username)
+            except User.DoesNotExist:
+                return Response({'error': 'Invalid username.'}, status=status.HTTP_400_BAD_REQUEST)
 
-class MyTokenObtainPairView(TokenObtainPairView):
-    serializer_class = MyTokenObtainPairSerializer
-
-class UserLoginAPIView(APIView):
-    permission_classes = [AllowAny]
-    throttle_classes = [AnonRateThrottle]
-
-    def post(self, request):
-        serializer = UserLoginSerializer(data=request.data)
-        if serializer.is_valid(raise_exception=True):
-            user = serializer.validated_data['user']
-            user_profile = user.userprofile
-
-            if user_profile.is_2fa_enabled:
-                otp = ''.join(random.choices('0123456789', k=6))
-                OTP.objects.create(
+            try:
+                token = AuthToken.objects.get(
                     user=user,
-                    code=otp,
-                    purpose='2fa',
-                    expires_at=timezone.now() + timezone.timedelta(minutes=5)
+                    otp_code=otp,
+                    token_type='signup_otp',
+                    is_used=False
                 )
-                send_mail(
-                    'Your 2FA OTP',
-                    f'Your one-time password is: {otp}',
-                    settings.DEFAULT_FROM_EMAIL,
-                    [user.email],
-                    fail_silently=False,
-                )
-                return Response({'message': '2FA enabled. OTP sent to your email.'}, status=status.HTTP_200_OK)
-            else:
-                login(request, user)
-                log_user_activity(user, activity_type='Login Success', request=request)
-                refresh = RefreshToken.for_user(user)
-                return Response({
-                    'message': 'Login successful.',
-                    'refresh': str(refresh),
-                    'access': str(refresh.access_token),
-                }, status=status.HTTP_200_OK)
+            except AuthToken.DoesNotExist:
+                return Response({'error': 'Invalid or expired OTP.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Check for token expiration separately to be more explicit
+            if token.expires_at < timezone.now():
+                token.is_used = True
+                token.save()
+                return Response({'error': 'OTP has expired.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            user.is_active = True
+            user.save()
+
+            token.is_used = True
+            token.save()
+
+            return Response(
+                {'message': 'OTP verified successfully. Your account is now active.'},
+                status=status.HTTP_200_OK
+            )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-class UserLogoutAPIView(APIView):
-    permission_classes = [IsAuthenticated]
-
+class ResendSignupOTPView(APIView):
+    """
+    API view to resend OTP for signup verification.
+    """
+    permission_classes = [AllowAny]
     def post(self, request):
-        try:
-            refresh_token = request.data.get('refresh')
-            if not refresh_token:
-                return Response({'detail': 'Refresh token not provided.'}, status=status.HTTP_400_BAD_REQUEST)
-            token = RefreshToken(refresh_token)
-            token.blacklist()
-            log_user_activity(request.user, activity_type='Logout', request=request)
-            return Response({'message': 'Successfully logged out.'}, status=status.HTTP_205_RESET_CONTENT)
-        except Exception as e:
-            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = ResendVerificationSerializer(data=request.data)
+        if serializer.is_valid():
+            username = serializer.validated_data['username']
+            try:
+                user = User.objects.get(username=username)
+                if user.is_active:
+                    return Response({'error': 'Account is already active.'}, status=status.HTTP_400_BAD_REQUEST)
 
-class UserProfileAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+                # Expire any existing OTP tokens
+                AuthToken.objects.filter(user=user, token_type='signup_otp', is_used=False).update(expires_at=timezone.now())
+
+                # Generate and send a new OTP
+                otp = generate_otp()
+                AuthToken.objects.create(
+                    user=user,
+                    otp_code=otp,
+                    token_type='signup_otp',
+                )
+                send_otp_email(user, otp)
+                
+                return Response({'message': 'New OTP sent to your email.'}, status=status.HTTP_200_OK)
+            except User.DoesNotExist:
+                return Response({'error': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+# View for verifying email with a link
+class VerifyEmailLinkAPIView(APIView):
+    """
+    API view to handle email verification via a link.
+    """
+    permission_classes = [AllowAny]
 
     def get(self, request):
-        user_profile = UserProfile.objects.get(user=request.user)
-        serializer = UserProfileSerializer(user_profile)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        token_uuid = request.GET.get('token')
+        if not token_uuid:
+            return Response({'error': 'Token not provided'}, status=status.HTTP_400_BAD_REQUEST)
 
-class UpdateProfileAPIView(APIView):
+        try:
+            token = AuthToken.objects.get(token=token_uuid, token_type='signup_link', is_used=False)
+            
+            if token.expires_at > timezone.now():
+                user = token.user
+                user.is_active = True
+                user.save()
+                token.is_used = True
+                token.save()
+                return Response(
+                    {'message': 'Email verified successfully. Your account is now active.'},
+                    status=status.HTTP_200_OK
+                )
+            else:
+                return Response(
+                    {'error': 'Token has expired.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        except AuthToken.DoesNotExist:
+            return Response(
+                {'error': 'Invalid token or token already used.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+# View to resend a verification link
+class ResendVerificationLinkAPIView(APIView):
+    """
+    API view to resend a verification link.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = ResendVerificationSerializer(data=request.data)
+        if serializer.is_valid():
+            username = serializer.validated_data['username']
+            try:
+                user = User.objects.get(username=username)
+                if user.is_active:
+                    return Response({'error': 'Account is already active.'}, status=status.HTTP_400_BAD_REQUEST)
+                
+                AuthToken.objects.filter(user=user, token_type='signup_link', is_used=False).update(expires_at=timezone.now())
+                
+                token = AuthToken.objects.create(user=user, token_type='signup_link')
+                send_verification_email(user, token)
+                return Response({'message': 'Verification email resent successfully.'}, status=status.HTTP_200_OK)
+            except User.DoesNotExist:
+                return Response({'error': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+# View for user login with a custom serializer that handles authentication
+class LoginView(APIView):
+    def post(self, request):
+        serializer = LoginSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.validated_data
+
+        # If user is inactive → Reactivation flow
+        if not user.is_active:
+            auth_token = AuthToken.objects.create(
+                user=user,
+                token_type='reactivation',
+                expires_at=timezone.now() + timezone.timedelta(minutes=15)
+            )
+
+            if settings.USE_OTP_VERIFICATION:
+                otp = str(random.randint(100000, 999999))
+                auth_token.otp_code = otp
+                auth_token.save()
+
+                send_mail(
+                    subject="Reactivate Your Account",
+                    message=f"Your account reactivation code is: {otp}",
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[user.email],
+                    fail_silently=False
+                )
+            else:
+                link = f"{settings.FRONTEND_URL}/reactivate-account?token={auth_token.token}"
+                send_mail(
+                    subject="Reactivate Your Account",
+                    message=f"Click the following link to reactivate your account:\n{link}",
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[user.email],
+                    fail_silently=False
+                )
+
+            # Log reactivation attempt
+            UserActivityLog.objects.create(
+                user=user,
+                activity_type='REACTIVATE_REQUEST',
+                ip_address=get_client_ip(request),
+                user_agent=request.META.get('HTTP_USER_AGENT', '')
+            )
+
+            return Response({
+                "reactivation_required": True,
+                "message": "Reactivation email sent."
+            }, status=status.HTTP_200_OK)
+
+        # If user is active but 2FA is enabled → 2FA flow
+        if hasattr(user, 'profile') and user.profile.is_2fa_enabled:
+            auth_token = AuthToken.objects.create(
+                user=user,
+                token_type='2fa',
+                expires_at=timezone.now() + timezone.timedelta(minutes=15)
+            )
+
+            if settings.USE_OTP_VERIFICATION:
+                otp = str(random.randint(100000, 999999))
+                auth_token.otp_code = otp
+                auth_token.save()
+
+                send_mail(
+                    subject="Your 2FA OTP Code",
+                    message=f"Your one-time login code is: {otp}",
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[user.email],
+                    fail_silently=False
+                )
+            else:
+                link = f"{settings.FRONTEND_URL}/verify-2fa?token={auth_token.token}"
+                send_mail(
+                    subject="Verify Your Login",
+                    message=f"Click the following link to verify your login:\n{link}",
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[user.email],
+                    fail_silently=False
+                )
+
+            # Log 2FA request
+            UserActivityLog.objects.create(
+                user=user,
+                activity_type='2FA_REQUEST',
+                ip_address=get_client_ip(request),
+                user_agent=request.META.get('HTTP_USER_AGENT', '')
+            )
+
+            return Response({
+                "2fa_required": True,
+                "message": "Verification sent to your email."
+            }, status=status.HTTP_200_OK)
+
+        # Normal login → issue JWT tokens immediately
+        refresh = RefreshToken.for_user(user)
+
+        # Log successful login
+        UserActivityLog.objects.create(
+            user=user,
+            activity_type='LOGIN',
+            ip_address=get_client_ip(request),
+            user_agent=request.META.get('HTTP_USER_AGENT', '')
+        )
+
+        return Response({
+            "access": str(refresh.access_token),
+            "refresh": str(refresh),
+            "username": user.username
+        }, status=status.HTTP_200_OK)
+
+
+
+class MyTokenObtainPairView(TokenObtainPairView):
+    """
+    Custom JWT view with activity logging and 2FA support.
+    Modified to reactivate a user's account if they log in successfully
+    while their account is inactive.
+    """
+    serializer_class = MyTokenObtainPairSerializer
+
+    def post(self, request, *args, **kwargs):
+        # Attempt to get the user by username first, regardless of active status
+        username = request.data.get('username')
+        password = request.data.get('password')
+
+        try:
+            user = User.objects.get(username=username)
+        except User.DoesNotExist:
+            return Response({'error': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        # Check if the password is correct
+        if not user.check_password(password):
+            return Response({'error': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        # If the user is found and password is correct, check if they are inactive
+        if not user.is_active:
+            user.is_active = True
+            user.save()
+            
+            # Log the reactivation event
+            UserActivityLog.objects.create(
+                user=user,
+                activity_type='REACTIVATE',
+                ip_address=get_client_ip(request),
+                user_agent=request.META.get('HTTP_USER_AGENT', '')
+            )
+            print(f"User {user.username} reactivated on login.")
+            
+        # Check if 2FA is enabled for the user (only after successful authentication)
+        if getattr(user, 'profile', None) and user.profile.is_2fa_enabled:
+            # Check for an existing, unused OTP token and expire it
+            AuthToken.objects.filter(user=user, token_type='2fa_login', is_used=False).update(expires_at=timezone.now())
+
+            # Generate and send a new OTP for login verification
+            otp = generate_otp()
+            AuthToken.objects.create(user=user, otp_code=otp, token_type='2fa_login')
+            send_otp_email(user, otp)
+
+            return Response(
+                {"message": "2FA enabled. An OTP has been sent to your email. Please verify to log in."},
+                status=status.HTTP_200_OK
+            )
+        else:
+            # If no 2FA, proceed with normal login and token generation
+            response = super().post(request, *args, **kwargs)
+            if response.status_code == 200:
+                # Log the login activity
+                UserActivityLog.objects.create(
+                    user=user,
+                    activity_type='LOGIN',
+                    ip_address=get_client_ip(request),
+                    user_agent=request.META.get('HTTP_USER_AGENT', '')
+                )
+            return response
+
+class Verify2FALoginView(APIView):
+    def post(self, request):
+        serializer = Verify2FALoginSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        username = serializer.validated_data['username']
+        otp_or_token = serializer.validated_data['otp']
+
+        try:
+            user = User.objects.get(username=username)
+        except User.DoesNotExist:
+            return Response({"error": "Invalid username"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Detect whether this is reactivation or 2FA verification
+        if settings.USE_OTP_VERIFICATION:
+            token_obj = AuthToken.objects.filter(
+                user=user,
+                token_type__in=['2fa', 'reactivation'],
+                otp_code=otp_or_token,
+                is_used=False,
+                expires_at__gt=timezone.now()
+            ).first()
+        else:
+            token_obj = AuthToken.objects.filter(
+                user=user,
+                token_type__in=['2fa', 'reactivation'],
+                token=otp_or_token,
+                is_used=False,
+                expires_at__gt=timezone.now()
+            ).first()
+
+        if not token_obj:
+            return Response({"error": "Invalid or expired verification"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Mark token as used
+        token_obj.is_used = True
+        token_obj.save()
+
+        # If reactivation, activate the account
+        if token_obj.token_type == 'reactivation':
+            user.is_active = True
+            user.save()
+
+        # Issue JWT tokens
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            "access": str(refresh.access_token),
+            "refresh": str(refresh),
+            "username": user.username
+        }, status=status.HTTP_200_OK)
+
+class Resend2FAOTPView(APIView):
+    """
+    API view to resend 2FA OTP for login.
+    """
+    permission_classes = [IsAuthenticated]
+    def post(self, request):
+        user = request.user
+        if not getattr(user, 'profile', None) or not user.profile.is_2fa_enabled:
+            return Response({'error': '2FA is not enabled for this user.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Invalidate any old tokens for 2FA login
+        AuthToken.objects.filter(user=user, token_type='2fa_login', is_used=False).update(expires_at=timezone.now())
+
+        # Generate and send a new OTP
+        otp = generate_otp()
+        AuthToken.objects.create(user=user, otp_code=otp, token_type='2fa_login')
+        send_otp_email(user, otp)
+
+        return Response(
+            {'message': 'A new 2FA OTP has been sent to your email.'},
+            status=status.HTTP_200_OK
+        )
+
+# View for user logout
+class UserLogoutAPIView(APIView):
+    """
+    API view to handle user logout by blacklisting the refresh token.
+    """
     permission_classes = [IsAuthenticated]
 
+    def post(self, request):
+        print(request.data)
+        refresh_token = request.data.get("refresh")
+        if not refresh_token:
+            return Response({'error': 'Refresh token not provided.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            token = RefreshToken(refresh_token)
+            token.blacklist()
+            return Response({'message': 'Logout successful.'}, status=status.HTTP_200_OK)
+        except Exception as e:
+            # A more specific error could be raised by the JWT library if the token is invalid
+            return Response({'error': 'Invalid token or token already blacklisted.'}, status=status.HTTP_400_BAD_REQUEST)
+
+# View for user profile
+class UserProfileAPIView(APIView):
+    """
+    API view to get the user's profile details.
+    """
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        profile, _ = UserProfile.objects.get_or_create(user=request.user)
+        serializer = ProfileSerializer(profile)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+# View to update a user's profile
+class UpdateProfileAPIView(APIView):
+    """
+    API view to update a user's profile information.
+    """
+    permission_classes = [IsAuthenticated]
     def put(self, request):
-        user_profile = UserProfile.objects.get(user=request.user)
-        serializer = UserProfileSerializer(user_profile, data=request.data, partial=True)
+        serializer = UpdateProfileSerializer(request.user.profile, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
-            log_user_activity(request.user, activity_type='Profile Updated', request=request)
             return Response(serializer.data, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-class ChangePasswordAPIView(APIView):
+# View to upload a profile picture
+class ProfilePictureUploadAPIView(APIView):
+    """
+    API view to upload a new profile picture.
+    """
     permission_classes = [IsAuthenticated]
-
     def post(self, request):
-        serializer = PasswordChangeSerializer(data=request.data, context={'request': request})
+        serializer = ProfilePictureSerializer(request.user.profile, data=request.data)
         if serializer.is_valid():
-            user = request.user
-            user.set_password(serializer.validated_data['new_password'])
-            user.save()
-            PasswordHistory.objects.create(user=user, hashed_password=user.password)
-            log_user_activity(user, activity_type='Password Changed', request=request)
-            return Response({'message': 'Password changed successfully.'}, status=status.HTTP_200_OK)
+            serializer.save()
+            return Response({'message': 'Profile picture updated successfully.'}, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-class PasswordResetRequestAPIView(APIView):
-    permission_classes = [AllowAny]
-    throttle_classes = [AnonRateThrottle]
+# View for changing a user's password
+class ChangePasswordAPIView(APIView):
+    """
+    API view to change the user's password.
+    """
+    permission_classes = [IsAuthenticated]
+    def post(self, request):
+        try:
+            serializer = ChangePasswordSerializer(data=request.data, context={'request': request})
+            if serializer.is_valid():
+                user = request.user
+                user.set_password(serializer.validated_data['new_password'])
+                user.save()
 
+                # Log the password change
+                PasswordHistory.objects.create(
+                    user=user,
+                    hashed_password=user.password
+                )
+                # Log the activity
+                UserActivityLog.objects.create(
+                    user=user,
+                    activity_type='PASSWORD_CHANGE',
+                    ip_address=get_client_ip(request),
+                    user_agent=request.META.get('HTTP_USER_AGENT', '')
+                )
+                return Response(
+                    {'message': 'Password changed successfully.'},
+                    status=status.HTTP_200_OK
+                )
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            print(f"Error in ChangePasswordAPIView: {e}")
+            return Response(
+                {'error': 'An internal server error occurred during password change.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class PasswordResetRequestAPIView(APIView):
+    """
+    API view to request a password reset email.
+    """
+    permission_classes = [AllowAny]
     def post(self, request):
         serializer = PasswordResetRequestSerializer(data=request.data)
         if serializer.is_valid():
-            email = serializer.validated_data['email']
-            user = User.objects.get(email=email)
-            uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
-            token = PasswordResetTokenGenerator().make_token(user)
-            reset_url = request.build_absolute_uri(reverse('password-reset-confirm'))
-            send_mail(
-                'Password Reset Request',
-                f'Please send a POST request to {reset_url} with the following JSON body: {{"uidb64": "{uidb64}", "token": "{token}"}}',
-                settings.DEFAULT_FROM_EMAIL,
-                [email],
-                fail_silently=False,
-            )
-            log_user_activity(user, activity_type='Password Reset Requested', request=request)
-            return Response({'message': 'Password reset link sent to your email.'}, status=status.HTTP_200_OK)
+            try:
+                user = User.objects.get(email=serializer.validated_data['email'])
+                
+                # Invalidate any old tokens for password reset
+                AuthToken.objects.filter(user=user, token_type='password_reset', is_used=False).update(expires_at=timezone.now())
+
+                # Create a new token
+                token = AuthToken.objects.create(user=user, token_type='password_reset')
+                
+                # Send the email with the reset link
+                subject = 'Password Reset Request'
+                message = f'Hi {user.username},\n\nPlease use the following token to reset your password: {token.token}\n\nThis token is valid for 15 minutes.'
+                send_email(subject, message, [user.email])
+
+                return Response(
+                    {'message': 'Password reset token sent to email.'},
+                    status=status.HTTP_200_OK
+                )
+
+            except User.DoesNotExist:
+                return Response(
+                    {'error': 'User with this email not found.'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class PasswordResetConfirmAPIView(APIView):
+    """
+    API view to confirm password reset with a token.
+    """
     permission_classes = [AllowAny]
 
     def post(self, request):
-        serializer = PasswordResetConfirmSerializer(data=request.data)
-        if serializer.is_valid():
-            user = serializer.validated_data['user']
-            user.set_password(serializer.validated_data['password'])
-            user.save()
-            PasswordHistory.objects.create(user=user, hashed_password=user.password)
-            log_user_activity(user, activity_type='Password Reset Confirmed', request=request)
-            return Response({'message': 'Password has been successfully reset.'}, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            serializer = PasswordResetConfirmSerializer(data=request.data)
+            if serializer.is_valid():
+                token_uuid = serializer.validated_data['token']
+                new_password = serializer.validated_data['new_password']
 
-class Verify2FAOTPView(APIView):
-    permission_classes = [AllowAny]
+                # Fetch the token and validate it
+                try:
+                    token = AuthToken.objects.get(
+                        token=token_uuid,
+                        token_type='password_reset',
+                        is_used=False,
+                        expires_at__gt=timezone.now()
+                    )
+                except AuthToken.DoesNotExist:
+                    return Response({'error': 'Invalid or expired token.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    def post(self, request):
-        serializer = OTPVerificationSerializer(data=request.data)
-        if serializer.is_valid():
-            try:
-                otp_obj = OTP.objects.get(code=serializer.validated_data['otp'], purpose='2fa', is_used=False)
-                if not otp_obj.is_valid():
-                    return Response({'message': 'Invalid or expired OTP.'}, status=status.HTTP_400_BAD_REQUEST)
-                user = otp_obj.user
-                otp_obj.is_used = True
-                otp_obj.save()
-                login(request, user)
-                log_user_activity(user, activity_type='2FA OTP Verified', request=request)
-                refresh = RefreshToken.for_user(user)
-                return Response({
-                    'message': 'OTP verified. Login successful.',
-                    'refresh': str(refresh),
-                    'access': str(refresh.access_token),
-                }, status=status.HTTP_200_OK)
-            except OTP.DoesNotExist:
-                return Response({'message': 'Invalid OTP.'}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                user = token.user
 
-class Resend2FAOTPView(APIView):
+                # Maintain only last 10 password histories
+                histories = PasswordHistory.objects.filter(user=user).order_by('-created_at')
+                if histories.count() >= 10:
+                    # Get the oldest password history (by created_at ascending)
+                    oldest_password_history = PasswordHistory.objects.filter(user=user).order_by('created_at').first()
+                    if oldest_password_history:
+                        oldest_password_history.delete()
+
+                # Check for password reuse
+                for history in PasswordHistory.objects.filter(user=user):
+                    if check_password(new_password, history.hashed_password):
+                        return Response({'error': 'Cannot reuse recent passwords.'}, status=status.HTTP_400_BAD_REQUEST)
+
+                # Set and save new password
+                user.set_password(new_password)
+                user.save()
+
+                # Save new password to history
+                PasswordHistory.objects.create(
+                    user=user,
+                    hashed_password=user.password
+                )
+
+                # Mark token as used
+                token.is_used = True
+                token.save()
+
+                return Response({'message': 'Password reset successfully.'}, status=status.HTTP_200_OK)
+
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        except Exception as e:
+            print(f"Error in PasswordResetConfirmAPIView: {e}")
+            return Response(
+                {'error': 'An internal server error occurred during password reset confirmation.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+class Toggle2FAAPIView(APIView):
+    """
+    API view to enable/disable 2FA for a user.
+    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         user = request.user
-        if not user.userprofile.is_2fa_enabled:
-            return Response({'message': '2FA is not enabled for this user.'}, status=status.HTTP_400_BAD_REQUEST)
-        OTP.objects.filter(user=user, purpose='2fa', is_used=False).delete()
-        otp = ''.join(random.choices('0123456789', k=6))
-        OTP.objects.create(
-            user=user,
-            code=otp,
-            purpose='2fa',
-            expires_at=timezone.now() + timezone.timedelta(minutes=5)
-        )
-        send_mail(
-            'Your 2FA OTP',
-            f'Your one-time password is: {otp}',
-            settings.DEFAULT_FROM_EMAIL,
-            [user.email],
-            fail_silently=False,
-        )
-        log_user_activity(user, activity_type='2FA OTP Resent', request=request)
-        return Response({'message': 'New OTP sent to your email.'}, status=status.HTTP_200_OK)
+        profile, created = UserProfile.objects.get_or_create(user=user)
+        
+        profile.is_2fa_enabled = not profile.is_2fa_enabled
+        profile.save()
 
-class Toggle2FAAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+        if profile.is_2fa_enabled:
+            return Response({'message': 'Two-factor authentication enabled successfully.'}, status=status.HTTP_200_OK)
+        else:
+            return Response({'message': 'Two-factor authentication disabled successfully.'}, status=status.HTTP_200_OK)
 
-    def post(self, request):
-        user_profile = request.user.userprofile
-        user_profile.is_2fa_enabled = not user_profile.is_2fa_enabled
-        user_profile.save()
-        log_user_activity(request.user, activity_type='2FA Toggled', request=request, details=f'2FA has been {"enabled" if user_profile.is_2fa_enabled else "disabled"}.')
-        return Response(
-            {'message': f'Two-factor authentication has been {"enabled" if user_profile.is_2fa_enabled else "disabled"}.'},
-            status=status.HTTP_200_OK
-        )
 
 class DeactivateAccountAPIView(APIView):
+    """
+    API view to deactivate a user's account.
+    """
     permission_classes = [IsAuthenticated]
-
     def post(self, request):
-        serializer = AccountDeactivateSerializer(data=request.data, context={'request': request})
-        if serializer.is_valid():
-            user = request.user
-            user.is_active = False
-            user.save()
-            logout(request)
-            log_user_activity(user, activity_type='Account Deactivated', request=request)
-            return Response({'message': 'Account has been deactivated.'}, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        user = request.user
+        if not user.is_active:
+            return Response({'message': 'Account is already deactivated.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user.is_active = False
+        user.save()
+
+        # Invalidate all of the user's refresh tokens to log them out
+        for token in OutstandingToken.objects.filter(user=user):
+            BlacklistedToken.objects.get_or_create(token=token)
+
+        UserActivityLog.objects.create(
+            user=user,
+            activity_type='DEACTIVATE_ACCOUNT',
+            ip_address=get_client_ip(request),
+            user_agent=request.META.get('HTTP_USER_AGENT', '')
+        )
+
+        return Response({'message': 'Account deactivated successfully.'}, status=status.HTTP_200_OK)
+
 
 class DeleteAccountAPIView(APIView):
+    """
+    API view to delete a user's account.
+    """
     permission_classes = [IsAuthenticated]
+    
+    def delete(self, request):
+        """
+        Delete the authenticated user's account.
+        """
+        user = request.user
+        
+        # Blacklist all JWT tokens for this user before deletion
+        for token in OutstandingToken.objects.filter(user=user):
+            BlacklistedToken.objects.get_or_create(token=token)
+        
+        # Delete the user (cascading deletes will handle related objects)
+        user.delete()
+        
+        return Response(
+            {'message': 'Account deleted successfully.'}, 
+            status=status.HTTP_204_NO_CONTENT
+        )
 
+
+class EmailChangeRequestAPIView(APIView):
+    """
+    API view to request an email change.
+    """
+    permission_classes = [IsAuthenticated]
     def post(self, request):
-        serializer = AccountDeleteSerializer(data=request.data, context={'request': request})
+        serializer = EmailChangeRequestSerializer(data=request.data)
         if serializer.is_valid():
+            new_email = serializer.validated_data['new_email']
             user = request.user
-            log_user_activity(user, activity_type='Account Deleted', request=request, details='User account was permanently deleted.')
-            user.delete()
-            logout(request)
-            return Response({'message': 'Account has been permanently deleted.'}, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            
+            if user.email == new_email:
+                return Response(
+                    {'error': 'New email cannot be the same as the current email.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Check if the new email is already in use
+            if User.objects.filter(email=new_email).exists():
+                return Response(
+                    {'error': 'This email is already in use.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
-class VerifyEmailLinkAPIView(APIView):
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        serializer = EmailVerificationSerializer(data=request.data)
-        if serializer.is_valid():
-            try:
-                token_obj = EmailVerificationToken.objects.get(token=serializer.validated_data['token'])
-                user = token_obj.user
-                if user.is_active:
-                    return Response({'message': 'Email is already verified.'}, status=status.HTTP_200_OK)
-                user.is_active = True
-                user.save()
-                token_obj.delete()
-                log_user_activity(user, activity_type='Email Verified', request=request)
-                return Response({'message': 'Email has been successfully verified.'}, status=status.HTTP_200_OK)
-            except EmailVerificationToken.DoesNotExist:
-                return Response({'message': 'Invalid or expired token.'}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-class ResendVerificationLinkAPIView(APIView):
-    permission_classes = [AllowAny]
-    throttle_classes = [AnonRateThrottle]
-
-    def post(self, request):
-        email = request.data.get('email')
-        if not email:
-            return Response({'message': 'Email is required.'}, status=status.HTTP_400_BAD_REQUEST)
-        try:
-            user = User.objects.get(email=email)
-            if user.is_active:
-                return Response({'message': 'Email is already verified.'}, status=status.HTTP_400_BAD_REQUEST)
-            EmailVerificationToken.objects.filter(user=user).delete()
-            token = EmailVerificationToken.objects.create(user=user)
-            verification_url = request.build_absolute_uri(reverse('verify-email'))
-            send_mail(
-                'Verify your email address',
-                f'Please send a POST request to {verification_url} with the following JSON body: {{"token": "{token.token}"}}',
-                settings.DEFAULT_FROM_EMAIL,
-                [user.email],
-                fail_silently=False,
+            # Invalidate any old email change tokens
+            AuthToken.objects.filter(user=user, token_type='email_change', is_used=False).update(expires_at=timezone.now())
+            
+            # Create a new token
+            token = AuthToken.objects.create(
+                user=user,
+                token_type='email_change',
+                new_email=new_email
             )
-            log_user_activity(user, activity_type='Resend Verification Link', request=request)
-            return Response({'message': 'New verification email sent.'}, status=status.HTTP_200_OK)
-        except User.DoesNotExist:
-            return Response({'message': 'No user found with this email address.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Send the email confirmation link to the new address
+            subject = 'Confirm your new email address'
+            message = f'Hi {user.username},\n\nPlease click the link to confirm your new email address: http://127.0.0.1:8001/auth/email-change-confirm/?token={token.token}'
+            send_email(subject, message, [new_email])
 
-class ProfilePictureUploadAPIView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        user_profile = request.user.userprofile
-        serializer = ProfilePictureUploadSerializer(user_profile, data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            log_user_activity(request.user, activity_type='Profile Picture Uploaded', request=request)
-            return Response(serializer.data, status=status.HTTP_200_OK)
+            return Response(
+                {'message': 'Confirmation email sent to new address.'},
+                status=status.HTTP_200_OK
+            )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class EmailChangeConfirmAPIView(APIView):
+    """
+    API view to confirm the email change.
+    """
+    permission_classes = [AllowAny]
+    def post(self, request):
+        serializer = EmailChangeConfirmSerializer(data=request.data)
+        if serializer.is_valid():
+            token_uuid = serializer.validated_data['token']
+            try:
+                token = AuthToken.objects.get(
+                    token=token_uuid,
+                    token_type='email_change',
+                    is_used=False,
+                    expires_at__gt=timezone.now()
+                )
+
+                user = token.user
+                user.email = token.new_email
+                user.save()
+                
+                token.is_used = True
+                token.save()
+
+                return Response(
+                    {'message': 'Email updated successfully'},
+                    status=status.HTTP_200_OK
+                )
+            except AuthToken.DoesNotExist:
+                return Response({'error': 'Invalid or expired token'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 
 class UserActivityLogAPIView(APIView):
+    """
+    API view to get a user's activity log.
+    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -393,34 +857,13 @@ class UserActivityLogAPIView(APIView):
         serializer = UserActivityLogSerializer(logs, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-class EmailChangeRequestAPIView(APIView):
+class UserActivityLogDeleteAPIView(APIView):
+    """
+    API view to delete a user's activity log.
+    """
     permission_classes = [IsAuthenticated]
 
-    def post(self, request):
-        serializer = EmailChangeRequestSerializer(data=request.data, context={'user': request.user})
-        if serializer.is_valid():
-            new_email = serializer.validated_data['new_email']
-            EmailChangeToken.objects.filter(user=request.user).delete()
-            token_obj = EmailChangeToken.objects.create(user=request.user, new_email=new_email)
-            change_url = request.build_absolute_uri(reverse('email-change-confirm'))
-            send_mail(
-                'Confirm Email Change',
-                f'Please send a POST request to {change_url} with the following JSON body: {{"token": "{token_obj.token}"}}',
-                settings.DEFAULT_FROM_EMAIL,
-                [new_email],
-                fail_silently=False,
-            )
-            log_user_activity(request.user, activity_type='Email Change Requested', request=request, details=f'Request to change email to {new_email}')
-            return Response({'message': 'Email change confirmation link sent to your new email.'}, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    def delete(self, request):
+        UserActivityLog.objects.filter(user=request.user).delete()
+        return Response({'message': 'Activity log deleted successfully.'}, status=status.HTTP_204_NO_CONTENT)
 
-class EmailChangeConfirmAPIView(APIView):
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        serializer = EmailChangeConfirmSerializer(data=request.data)
-        if serializer.is_valid():
-            user = serializer.save()
-            log_user_activity(user, activity_type='Email Change Confirmed', request=request, details=f'Email successfully changed to {user.email}')
-            return Response({'message': 'Email has been successfully changed.'}, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

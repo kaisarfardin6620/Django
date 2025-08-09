@@ -4,27 +4,9 @@ from rest_framework_simplejwt.views import (
     TokenVerifyView,
 )
 from .views import (
-    UserSignupAPIView,
-    VerifySignupOTPView,
-    UserLoginAPIView,
-    UserLogoutAPIView,
-    UserProfileAPIView,
-    UpdateProfileAPIView,
-    ChangePasswordAPIView,
-    PasswordResetRequestAPIView,
-    PasswordResetConfirmAPIView,
-    Verify2FAOTPView,
-    Resend2FAOTPView,
-    Toggle2FAAPIView,
-    DeactivateAccountAPIView,
-    DeleteAccountAPIView,
-    VerifyEmailLinkAPIView,
-    ResendVerificationLinkAPIView,
-    ProfilePictureUploadAPIView,
-    UserActivityLogAPIView,
-    EmailChangeRequestAPIView,
-    EmailChangeConfirmAPIView,
-    MyTokenObtainPairView
+    MyTokenObtainPairView, UserSignupAPIView, VerifySignupOTPView, VerifyEmailLinkAPIView, ResendVerificationLinkAPIView, LoginView, Verify2FALoginView, Resend2FAOTPView,
+    UserLogoutAPIView, UserProfileAPIView, UpdateProfileAPIView, ChangePasswordAPIView, PasswordResetRequestAPIView, PasswordResetConfirmAPIView, Toggle2FAAPIView, DeactivateAccountAPIView,
+    DeleteAccountAPIView, ProfilePictureUploadAPIView, UserActivityLogAPIView, EmailChangeRequestAPIView, EmailChangeConfirmAPIView, ResendSignupOTPView,
 )
 
 urlpatterns = [
@@ -33,17 +15,18 @@ urlpatterns = [
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('token/verify/', TokenVerifyView.as_view(), name='token_verify'),
 
-    # User signup and verification (choose one method by commenting out the other)
+    # User signup and verification
     path('signup/', UserSignupAPIView.as_view(), name='signup'),
-    # Option 1: Email Link Verification
+    
+    # Verification endpoints
     path('verify-email/', VerifyEmailLinkAPIView.as_view(), name='verify-email'),
     path('verify-email/resend/', ResendVerificationLinkAPIView.as_view(), name='resend-verification'),
-    # Option 2: OTP Verification
-    #path('signup/verify-otp/', VerifySignupOTPView.as_view(), name='verify-signup-otp'),
+    path('verify-signup-otp/', VerifySignupOTPView.as_view(), name='verify-signup-otp'),
+    path('verify-signup-otp/resend/', ResendSignupOTPView.as_view(), name='resend-signup-otp'),
 
     # Login and 2FA
-    path('login/', UserLoginAPIView.as_view(), name='login'),
-    path('login/verify-2fa/', Verify2FAOTPView.as_view(), name='verify-2fa'),
+    path('login/', LoginView.as_view(), name='login'),
+    path('login/verify-2fa/', Verify2FALoginView.as_view(), name='verify-2fa'),
     path('login/resend-2fa/', Resend2FAOTPView.as_view(), name='resend-2fa'),
     path('logout/', UserLogoutAPIView.as_view(), name='logout'),
 

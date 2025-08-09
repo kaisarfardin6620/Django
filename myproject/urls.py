@@ -14,15 +14,20 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
+
 from django.contrib import admin
 from django.urls import path, include
-from django.conf import settings
-from django.conf.urls.static import static
+
+# Corrected import: 'UserSignupAPIView' is the correct class name from your views.py
+from authentication.views import MyTokenObtainPairView, UserSignupAPIView
 
 urlpatterns = [
+    # Django admin site
     path('admin/', admin.site.urls),
+    
+    # Include the URLs from your authentication app
     path('auth/', include('authentication.urls')),
-]
 
-if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+    # You might have other app URLs here
+    # path('', include('myapp.urls')), 
+]

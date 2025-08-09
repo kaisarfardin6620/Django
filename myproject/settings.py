@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     'authentication',
     'rest_framework',
     'rest_framework_simplejwt',
+     'rest_framework_simplejwt.token_blacklist',
 ]
 
 MIDDLEWARE = [
@@ -175,3 +176,8 @@ EMAIL_USE_SSL = False
 EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD')
 DEFAULT_FROM_EMAIL = os.getenv('EMAIL_HOST_USER')
+
+
+USE_OTP_VERIFICATION = True
+
+FRONTEND_URL = 'http://127.0.0.1:8001'
