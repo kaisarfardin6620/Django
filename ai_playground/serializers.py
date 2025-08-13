@@ -16,43 +16,51 @@ class AttachmentSerializer(serializers.ModelSerializer):
             return request.build_absolute_uri(obj.file.url)
         return obj.file.url
 
-
-# class MessageSerializer(serializers.ModelSerializer):
-#     attachments = AttachmentSerializer(source='conversation.attachments', many=True, read_only=True)
-#     class Meta:
-#         model = Message
-#         fields = ['id','conversation','role','text','metadata','created_at','attachments']
-#         read_only_fields = ['id','created_at','attachments']
-
 class MessageSerializer(serializers.ModelSerializer):
+    attachments_data = serializers.ListField(
+        child=serializers.FileField(), write_only=True, required=False
+    )
+    attachments = AttachmentSerializer(many=True, read_only=True, source='attachments_for_message')
+
     class Meta:
         model = Message
-        fields = ['id', 'conversation', 'text']  # no 'role', no 'created_at' needed here
+        fields = ['id', 'conversation', 'role', 'text', 'metadata', 'created_at', 'attachments', 'attachments_data']
+        read_only_fields = ['id', 'created_at', 'attachments']
+        extra_kwargs = {
+            'conversation': {'write_only': True},
+            'role': {'write_only': True},
+        }
 
-    def validate_conversation(self, value):
-        # Optional: check that the conversation belongs to the user
-        request = self.context.get('request')
-        if value.created_by != request.user:
-            raise serializers.ValidationError("You don't own this conversation.")
-        return value        
-
+    def create(self, validated_data):
+        attachments_data = validated_data.pop('attachments_data', [])
+        
+        validated_data['role'] = 'user'
+        
+        message = Message.objects.create(**validated_data)
+        
+        for file in attachments_data:
+            Attachment.objects.create(
+                conversation=message.conversation,
+                uploaded_by=message.conversation.created_by,
+                file=file,
+                filename=file.name,
+                content_type=file.content_type,
+                size=file.size
+            )
+        
+        return message
 
 class ConversationSerializer(serializers.ModelSerializer):
-    last_message = serializers.SerializerMethodField()
     messages_count = serializers.IntegerField(source='messages.count', read_only=True)
+    messages = MessageSerializer(many=True, read_only=True)
 
     class Meta:
         model = Conversation
-        fields = ['id','playground','title','created_by','created_at','updated_at','is_archived','last_message','messages_count']
-        read_only_fields = ['id','created_by','created_at','updated_at','messages_count','last_message']
-
-    def get_last_message(self, obj):
-        last = obj.messages.order_by('-created_at').first()
-        return MessageSerializer(last, context=self.context).data if last else None
+        fields = ['id','playground','title','created_by','created_at','updated_at','is_archived','messages_count', 'messages']
+        read_only_fields = ['id','created_by','created_at','updated_at','messages_count', 'messages']
 
     def create(self, validated_data):
         request = self.context.get('request')
         if request and not validated_data.get('created_by'):
             validated_data['created_by'] = request.user
         return super().create(validated_data)
-

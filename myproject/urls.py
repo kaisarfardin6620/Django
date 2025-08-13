@@ -22,5 +22,5 @@ from authentication.views import MyTokenObtainPairView, UserSignupAPIView
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('auth/', include('authentication.urls')),
-    path('ai/', include('ai_playground.urls')),
+    path('api/', include('ai_playground.urls')),
 ]
