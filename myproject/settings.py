@@ -1,3 +1,4 @@
+
 """
 Django settings for myproject project.
 
@@ -14,6 +15,7 @@ from pathlib import Path
 from datetime import timedelta
 import os
 from dotenv import load_dotenv
+from decouple import config
 
 # Load environment variables from .env file
 load_dotenv()
@@ -42,8 +44,9 @@ INSTALLED_APPS = [
     'authentication',
     'rest_framework',
     'rest_framework_simplejwt',
-     'rest_framework_simplejwt.token_blacklist',
-     'ai_playground',
+    'rest_framework_simplejwt.token_blacklist',
+    'ai_playground',
+    'channels',
 ]
 
 MIDDLEWARE = [
@@ -74,7 +77,9 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = 'myproject.wsgi.application'
+#WSGI_APPLICATION = 'myproject.wsgi.application'
+
+ASGI_APPLICATION = 'myproject.asgi.application' 
 
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
@@ -184,3 +189,18 @@ USE_OTP_VERIFICATION = True
 FRONTEND_URL = 'http://127.0.0.1:8001'
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [{
+                "host": config("REDIS_HOST"),
+                "port": config("REDIS_PORT", cast=int),
+                "username": config("REDIS_USERNAME"),
+                "password": config("REDIS_PASSWORD"),
+            }],
+        },
+    },
+}

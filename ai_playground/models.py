@@ -4,7 +4,6 @@ from django.utils import timezone
 import uuid
 
 def attachment_upload_to(instance, filename):
-    # store in media/ai_playground/<user_id>/<conversation_id>/<uuid>_<filename>
     return f"ai_playground/{instance.conversation.user.id}/{instance.conversation.id}/{uuid.uuid4().hex}_{filename}"
 
 class AIPlayground(models.Model):
@@ -41,7 +40,6 @@ class Message(models.Model):
     conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name='messages')
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='user')
     text = models.TextField(blank=True)
-    # optional link to an attachment if message contains only file
     created_at = models.DateTimeField(auto_now_add=True)
     metadata = models.JSONField(blank=True, null=True)
 
