@@ -1,6 +1,5 @@
 from django.db import models
 from django.contrib.auth.models import User
-from django.utils import timezone
 import uuid
 
 def attachment_upload_to(instance, filename):
@@ -30,13 +29,8 @@ class Conversation(models.Model):
     def __str__(self):
         return f"{self.title} ({self.created_by.username})"
 
-
 class Message(models.Model):
-    ROLE_CHOICES = [
-        ('user', 'User'),
-        ('assistant', 'Assistant'),
-        ('system', 'System'),
-    ]
+    ROLE_CHOICES = [('user','User'),('assistant','Assistant'),('system','System')]
     conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name='messages')
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='user')
     text = models.TextField(blank=True)
@@ -49,14 +43,8 @@ class Message(models.Model):
     def __str__(self):
         return f"[{self.role}] {self.text[:40]}"
 
-
 class Attachment(models.Model):
-    ATTACHMENT_TYPES = [
-        ('image', 'Image'),
-        ('file', 'File'),
-        ('audio', 'Audio'),
-        ('other', 'Other'),
-    ]
+    ATTACHMENT_TYPES = [('image','Image'),('file','File'),('audio','Audio'),('other','Other')]
     conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name='attachments')
     uploaded_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='attachments')
     file = models.FileField(upload_to=attachment_upload_to)

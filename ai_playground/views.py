@@ -3,18 +3,13 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, FormParser
-from django.shortcuts import get_object_or_404
 from django.db import transaction
-from django.contrib.auth import get_user_model
 
 from .models import AIPlayground, Conversation, Message, Attachment
 from .serializers import ConversationSerializer, MessageSerializer, AttachmentSerializer
 from .engine import generate_title_from_message, generate_ai_response
 
-User = get_user_model()
-
 class ConversationViewSet(viewsets.ModelViewSet):
-    queryset = Conversation.objects.all()
     serializer_class = ConversationSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -29,7 +24,7 @@ class ConversationViewSet(viewsets.ModelViewSet):
         convo = self.get_object()
         title = request.data.get('title')
         if not title:
-            return Response({"detail": "title required"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail":"title required"}, status=status.HTTP_400_BAD_REQUEST)
         convo.title = title
         convo.save()
         return Response(self.get_serializer(convo).data)
@@ -43,15 +38,14 @@ class ConversationViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'])
     def search(self, request):
-        q = request.query_params.get('q', '').strip()
+        q = request.query_params.get('q','').strip()
         qs = self.get_queryset()
-        if q:
-            qs = qs.filter(title__icontains=q)
+        if q: qs = qs.filter(title__icontains=q)
         page = self.paginate_queryset(qs)
         if page is not None:
-            serializer = self.get_serializer(page, many=True)
+            serializer = self.get_serializer(page,many=True)
             return self.get_paginated_response(serializer.data)
-        serializer = self.get_serializer(qs, many=True)
+        serializer = self.get_serializer(qs,many=True)
         return Response(serializer.data)
 
 class AttachmentViewSet(viewsets.ModelViewSet):
@@ -69,9 +63,9 @@ class AttachmentViewSet(viewsets.ModelViewSet):
         f = serializer.validated_data.get('file')
         serializer.save(
             uploaded_by=self.request.user,
-            filename=getattr(f, 'name', ''),
-            size=getattr(f, 'size', None),
-            content_type=getattr(f, 'content_type', '')
+            filename=getattr(f,'name',''),
+            size=getattr(f,'size',None),
+            content_type=getattr(f,'content_type','')
         )
 
 class ChatView(APIView):
@@ -82,16 +76,14 @@ class ChatView(APIView):
         with transaction.atomic():
             conversation_id = request.data.get('conversation_id')
             user = request.user
-
             conversation = None
             if conversation_id:
                 try:
                     conversation = Conversation.objects.get(id=conversation_id, created_by=user)
                 except Conversation.DoesNotExist:
-                    return Response({"error": "Conversation not found or you don't have permission."}, status=status.HTTP_404_NOT_FOUND)
-
+                    return Response({"error":"Conversation not found"},status=404)
             if not conversation:
-                playground, _ = AIPlayground.objects.get_or_create(user=user, defaults={'title': f"{user.username}'s Playground"})
+                playground,_ = AIPlayground.objects.get_or_create(user=user, defaults={'title':f"{user.username}'s Playground"})
                 conversation = Conversation.objects.create(playground=playground, created_by=user, title="New Conversation")
 
             message_data = {
@@ -99,7 +91,7 @@ class ChatView(APIView):
                 'text': request.data.get('text'),
                 'attachments_data': request.FILES.getlist('attachments_data'),
             }
-            user_message_serializer = MessageSerializer(data=message_data, context={'request': request})
+            user_message_serializer = MessageSerializer(data=message_data, context={'request':request})
             user_message_serializer.is_valid(raise_exception=True)
             user_message = user_message_serializer.save(role='user')
 
@@ -110,12 +102,7 @@ class ChatView(APIView):
                     conversation.save()
 
             ai_text = generate_ai_response(conversation, user, user_message.text)
+            Message.objects.create(conversation=conversation, role='assistant', text=ai_text)
 
-            Message.objects.create(
-                conversation=conversation,
-                role='assistant',
-                text=ai_text
-            )
-
-            conversation_serializer = ConversationSerializer(conversation, context={'request': request})
-            return Response(conversation_serializer.data, status=status.HTTP_200_OK)
+            conversation_serializer = ConversationSerializer(conversation, context={'request':request})
+            return Response(conversation_serializer.data, status=200)
